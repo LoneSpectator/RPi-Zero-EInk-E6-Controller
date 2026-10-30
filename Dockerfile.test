@@ -1,0 +1,7 @@
+FROM photopainter:local
+COPY requirements-dev.txt requirements.txt ./
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+    pip install --no-cache-dir -r requirements-dev.txt
+COPY tests ./tests
+CMD ["python", "-m", "pytest", "-q"]

@@ -1,0 +1,89 @@
+"""Run against a disposable mock instance: APP_URL=... python scripts/browser_smoke.py."""
+import os
+from pathlib import Path
+from io import BytesIO
+from PIL import Image
+from playwright.sync_api import sync_playwright, expect
+
+expect.set_options(timeout=15000)
+url = os.getenv('APP_URL', 'http://127.0.0.1:8000')
+artifacts = Path(os.getenv('ARTIFACT_DIR', '/tmp/photopainter-ui'))
+artifacts.mkdir(parents=True, exist_ok=True)
+with sync_playwright() as p:
+    browser = p.chromium.launch(executable_path=os.getenv('CHROMIUM_PATH', '/usr/bin/chromium'), args=['--no-sandbox'])
+    page = browser.new_page(viewport={'width':1440,'height':1100}, device_scale_factor=1, timezone_id='America/New_York')
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    page.goto(url)
+    expect(page.locator('#connection')).to_have_text('模拟设备已连接')
+    expect(page.locator('#screen-state')).to_be_visible()
+    page.screenshot(path=str(artifacts/'overview-empty.png'),full_page=True)
+    page.locator('nav a[data-page="image"]').click()
+    out=BytesIO();Image.new('RGB',(600,300),'blue').save(out,'PNG')
+    page.locator('#image-file').set_input_files({'name':'海边.png','mimeType':'image/png','buffer':out.getvalue()})
+    page.locator('#image-preview').click()
+    expect(page.locator('#image-result')).to_be_visible()
+    page.locator('#image-display').click()
+    expect(page.locator('#toast')).to_contain_text('刷新队列')
+    page.wait_for_timeout(2500)
+    page.locator('nav a[data-page="text"]').click()
+    page.locator('#text-title').fill('留给明天的诗')
+    page.locator('#text-editor').click()
+    page.keyboard.press('Control+A')
+    page.keyboard.insert_text('山有木兮木有枝，\n心悦君兮君不知。')
+    page.keyboard.press('Control+A')
+    page.locator('[data-command="bold"]').click()
+    page.locator('[data-command="italic"]').click()
+    page.locator('[data-command="justifyCenter"]').click()
+    page.locator('#font-size').select_option('40')
+    page.locator('#font-family').select_option('source-serif')
+    page.locator('[data-color="#ff0000"]').click()
+    captured=[]
+    page.on('request',lambda r:captured.append(r.post_data_json) if '/api/preview/text' in r.url and r.method=='POST' else None)
+    page.locator('#text-preview').click()
+    expect(page.locator('#text-result')).to_be_visible()
+    assert captured and any(r.get('bold') and r.get('italic') and r['font']=='source-serif' and r['size']==40 and r['color']=='#ff0000' for b in captured[-1]['paragraphs'] for r in b['runs']),captured
+    assert all(b['align']=='center' for b in captured[-1]['paragraphs']),captured
+    page.screenshot(path=str(artifacts/'text.png'),full_page=True)
+    page.locator('#text-save').click()
+    expect(page.locator('#toast')).to_contain_text('内容已保存')
+    page.locator('nav a[data-page="library"]').click()
+    expect(page.locator('#library-grid article')).to_have_count(2)
+    page.locator('#library-search').fill('留给明天')
+    expect(page.locator('#library-grid article')).to_have_count(1)
+    page.locator('#library-grid [data-schedule]').click()
+    expect(page.locator('#schedule-dialog')).to_be_visible()
+    page.locator('#schedule-title').fill('半小时的诗')
+    page.locator('#schedule-form button[type="submit"]').click()
+    expect(page.locator('#schedule-dialog')).not_to_be_visible()
+    page.locator('nav a[data-page="schedule"]').click()
+    expect(page.locator('#schedule-list')).to_contain_text('半小时的诗')
+    page.locator('#schedule-list [data-edit]').click()
+    page.locator('#schedule-title').fill('修改后的排程')
+    page.locator('#schedule-enabled').uncheck()
+    page.locator('#schedule-form button[type="submit"]').click()
+    expect(page.locator('#schedule-list')).to_contain_text('修改后的排程')
+    page.on('dialog',lambda d:d.accept())
+    page.locator('#schedule-list [data-remove]').click()
+    expect(page.locator('#schedule-list')).to_contain_text('还没有排程')
+    # Device timezone must win even when the browser is in New York.
+    page.locator('#new-schedule').click()
+    page.locator('#schedule-title').fill('单次的诗')
+    page.locator('#schedule-kind').select_option('once')
+    page.locator('#schedule-once').fill('2035-01-02T08:15')
+    page.locator('#schedule-form button[type="submit"]').click()
+    expect(page.locator('#schedule-dialog')).not_to_be_visible()
+    expect(page.locator('#schedule-list')).to_contain_text('2035/01/02 08:15')
+    once=page.request.get(url+'/api/schedules').json()[0]
+    assert once['run_at']==2051309700,once  # 2035-01-02 00:15 UTC
+    page.locator('#schedule-list [data-remove]').click()
+    expect(page.locator('#schedule-list')).to_contain_text('还没有排程')
+    page.locator('nav a[data-page="overview"]').click()
+    expect(page.locator('#current-screen')).to_be_visible()
+    page.screenshot(path=str(artifacts/'overview.png'),full_page=True)
+    page.set_viewport_size({'width':390,'height':844})
+    page.screenshot(path=str(artifacts/'mobile.png'),full_page=True)
+    assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile horizontal overflow'
+    assert not errors,errors
+    browser.close()
+print('Browser smoke passed: upload → preview → display; styled text → save; library search; schedule create/edit/delete; overview + mobile.')
