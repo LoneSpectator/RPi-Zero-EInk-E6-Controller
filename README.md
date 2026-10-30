@@ -1,6 +1,6 @@
 # RPi-Zero-EInk-E6-Controller
 
-一个 Python 墨水屏控制程序：FastAPI + Pillow + SQLite，原生 HTML/CSS/JavaScript 控制台，无前端构建步骤。面向 **Raspberry Pi Zero 2 W + Waveshare 7.3 英寸 E6 六色电子纸（800×480）**，提供容器部署和不依赖硬件的模拟模式。
+一个 Python 墨水屏控制程序：FastAPI + Pillow + SQLite，原生 HTML/CSS/JavaScript 控制台，无前端构建步骤。面向 **Raspberry Pi Zero 2 W + Waveshare 7.3 英寸 E6 六色电子纸（800×480）**，通过 ARM64 容器部署到目标树莓派。
 
 - **概览**：设备系统时间、设备时区、电池电压与估算电量、刷新状态、最后成功下发画面、最近记录、即将执行的排程。
 - **图片**：上传 JPG/PNG（12 MiB、2000 万像素以内），完整等比显示（白色留边）或居中裁剪铺满；自动处理 EXIF 方向、透明背景和六色抖动。
@@ -8,34 +8,49 @@
 - **内容库**：保存内容、搜索、按类型筛选、重复显示、删除、添加排程。预览不入库，保存或“确认并刷新”才入库，每次成功显示更新显示时间。
 - **排程**：增删改查、启用/停用，指定日期的某一分钟或五字段 cron。SQLite 持久化，串行刷新，执行结果可查。
 
-## 快速启动：模拟模式
+## 容器镜像与自动构建
 
-安装 Docker Engine 和 Compose 插件，然后在仓库目录运行：
+- **GitHub 容器页面**：[rpi-zero-eink-e6-controller](https://github.com/LoneSpectator/RPi-Zero-EInk-E6-Controller/pkgs/container/rpi-zero-eink-e6-controller)
+- **镜像地址**：`ghcr.io/lonespectator/rpi-zero-eink-e6-controller`
+- **构建状态与日志**：[GitHub Actions · Container](https://github.com/LoneSpectator/RPi-Zero-EInk-E6-Controller/actions/workflows/container.yml)
 
-```bash
-cp .env.example .env
-# 可选：编辑 .env 设置 WEB_PASSWORD；默认仅绑定本机，首次使用可留空。
-docker compose up -d --build
-docker compose logs -f
-```
+推送到 `main` 或推送 `v*` 版本标签时，GitHub Actions 在 ARM64 runner（`ubuntu-24.04-arm`）上直接构建并发布仅供目标设备使用的 `linux/arm64` 镜像。不发布 amd64 或 armv7 镜像；宿主系统必须为 64 位 ARM。Pull Request 仅检查 ARM64 镜像能否构建，不运行模拟测试、不发布镜像；也可在 Actions 页面手动运行默认分支的工作流。
 
-用浏览器打开运行机器的 **8000 端口**。默认绑定 `127.0.0.1`；从局域网访问时，在 `.env` 设置 `BIND_ADDRESS=0.0.0.0`，并设置 `WEB_PASSWORD`。启用密码后浏览器通过 HTTP Basic 登录，默认用户 `admin`。跨不可信网络访问时在前面部署 HTTPS 反向代理，不直接开放明文 HTTP。
+| 镜像标签 | 用途 |
+| --- | --- |
+| `latest` | `main` 最近一次成功发布的镜像 |
+| `sha-<完整提交 SHA>` | 固定到某次构建的源码提交 |
+| `1.2.3`、`1.2` | 推送 `v1.2.3` 等版本标签后生成 |
 
-模拟模式会实际执行图像处理、数据库、排程与刷新队列，但不读取虚构电量，不访问 GPIO。默认模拟刷新耗时两秒。
+镜像构建成功只表示容器可以完成构建，不代表实体屏幕或电池功能已通过验收。工作流不运行模拟测试作为发布门槛，硬件验收按下文在目标树莓派上完成。
+
+工作流使用 GitHub 自动提供的 `GITHUB_TOKEN` 发布，无需另设个人访问令牌。**首次发布后，若包仍为私有，仓库所有者需在上述容器页面的 Package settings → Change visibility 中设为 Public，才能匿名拉取。** 若仓库或组织限制 Actions 发布包，还需允许该工作流写入 Packages。构建成功及包公开前，镜像可能尚不可拉取；请先检查构建日志。继续保持私有时，使用有 `read:packages` 权限的凭据登录 GHCR 后拉取，勿把凭据写入 `.env` 或提交到仓库。
 
 ## 树莓派真机部署
 
-推荐 **64 位 Raspberry Pi OS + Pi Zero 2 W（arm64）**。镜像使用支持 arm64/amd64 的 Python 基础镜像，通常直接在目标树莓派构建即可；字体首次下载较大，Zero 2 W 构建较慢。32 位 armv7 尚未验证。
+目标环境为 **Pi Zero 2 W + 64 位 Raspberry Pi OS（arm64）**。直接拉取 GitHub Actions 发布的 `linux/arm64` 镜像，无需在设备上构建或编译依赖。首次拉取会下载驱动依赖和全部字体；amd64 和 32 位 armv7 不在发布范围内。
 
 1. 按[微雪 Wiki](https://www.waveshare.net/wiki/RPi_Zero_PhotoPainter)连接设备，确认是 E6 六色版本。使用 `sudo raspi-config` 开启 **SPI** 和 **I²C**，按提示重启。
 2. 确认宿主机有 `/dev/spidev0.0`、`/dev/gpiochip0` 和 `/dev/i2c-1`。先停止微雪测试程序、原有 cron/相框服务，确保没有其他程序占用这些引脚。
-3. 复制并编辑 `.env`，设置非空 `WEB_PASSWORD`。如需局域网访问，再设置 `BIND_ADDRESS=0.0.0.0`。
-4. 运行：
+3. 在树莓派上安装 Docker Engine、Compose 插件和 Git，然后获取部署配置：
 
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml up -d --build
+git clone https://github.com/LoneSpectator/RPi-Zero-EInk-E6-Controller.git
+cd RPi-Zero-EInk-E6-Controller
+cp .env.example .env
+```
+
+编辑 `.env`，设置非空 `WEB_PASSWORD`；需要从局域网电脑访问时，设置 `BIND_ADDRESS=0.0.0.0`。默认镜像为 `ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest`，可修改 `IMAGE` 固定到已发布的版本标签或 `sha-<完整提交 SHA>`。
+
+拉取镜像并启动真机服务：
+
+```bash
+docker compose -f compose.yaml -f compose.hardware.yaml pull
+docker compose -f compose.yaml -f compose.hardware.yaml up -d
 docker compose -f compose.yaml -f compose.hardware.yaml logs -f
 ```
+
+浏览器访问树莓派的 **8000 端口**，使用 `.env` 中的用户和密码登录（默认用户 `admin`）。默认只绑定 `127.0.0.1`；设置 `BIND_ADDRESS=0.0.0.0` 后才允许局域网访问。跨不可信网络访问时，在前面部署 HTTPS 反向代理。
 
 硬件配置映射三个设备，不需要 `privileged: true`。容器默认 root，用于打开已映射的设备和写入数据目录。若改为普通用户运行，需自行配置设备组权限和数据目录权限。GPIO 采用 `lgpio`，无需在容器中伪造树莓派型号探测信息。
 
@@ -96,7 +111,17 @@ docker compose -f compose.yaml -f compose.hardware.yaml logs -f
 
 ## 数据与运维
 
-`./data` 挂载为 `/data`，包含 SQLite 数据库、内容 PNG、最后成功下发图与实例锁。重建镜像不会清除这些数据。预览不落盘，图片保存的是屏幕分辨率的六色图，不保留原始上传文件，文本保留结构化文档。单份内容是不可变快照；需要修改时新建一份。
+`./data` 挂载为 `/data`，包含 SQLite 数据库、内容 PNG、最后成功下发图与实例锁。拉取和更新镜像不会清除这些数据。预览不落盘，图片保存的是屏幕分辨率的六色图，不保留原始上传文件，文本保留结构化文档。单份内容是不可变快照；需要修改时新建一份。
+
+真机更新须继续使用同一组配置文件，保留设备映射：
+
+```bash
+git pull --ff-only
+docker compose -f compose.yaml -f compose.hardware.yaml pull
+docker compose -f compose.yaml -f compose.hardware.yaml up -d
+```
+
+保留已有 `.env` 和 `data/`，不要再次复制示例覆盖配置。修改 `IMAGE` 可切换到已发布的指定版本。
 
 备份时先停止服务，复制整个 `data/`（包括可能存在的 SQLite WAL 文件），再启动。不要只备份运行中数据库的单个文件。
 
@@ -110,6 +135,7 @@ docker compose start
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `IMAGE` | `ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest` | Compose 使用的镜像，可固定版本 |
 | `DISPLAY_DRIVER` | `mock` | `mock` 或 `waveshare`；真机模式必须设置密码 |
 | `DATA_DIR` | `/data` | 数据目录 |
 | `TZ` | `Asia/Shanghai` | IANA 时区 |
@@ -121,7 +147,9 @@ docker compose start
 
 ## 开发和测试
 
-Python 3.12；本地开发需安装上述五种中文字体（Debian/Ubuntu：`fonts-wqy-zenhei fonts-arphic-uming fonts-arphic-ukai fonts-noto-cjk`）。Docker 镜像已包含它们。
+开发使用 Python 3.12；本地开发需安装上述五种中文字体（Debian/Ubuntu：`fonts-wqy-zenhei fonts-arphic-uming fonts-arphic-ukai fonts-noto-cjk`）。Docker 镜像已包含它们。
+
+模拟模式仅用于调试排程、内容管理和接口逻辑，不验证 GPIO/SPI 接线、实际刷屏或 INA219 读数；生产部署使用上面的真机配置。以下本地检查是可选的软件回归检查，不作为 Actions 发布前置。
 
 ```bash
 python3 -m venv .venv
@@ -149,6 +177,16 @@ CHROMIUM_PATH=/usr/bin/chromium .venv/bin/python -m scripts.browser_refresh_smok
 检查覆盖图片、文本、内容库的禁用状态，刷新时预览和保存、第二个标签页、断线重连以及刷新失败后的恢复。
 
 主要目录：`app/main.py` API，`render.py` 排版与量化，`engine.py` 队列/排程，`hardware.py` 真机/模拟驱动与电池，`store.py` 数据库，`static/` 控制台。健康检查为 `/api/health`，状态为 `/api/status`；配置密码后 API 同样要求 Basic 登录。
+
+需要从本地源码构建并运行容器时，显式叠加 `compose.build.yaml`：
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+# 真机本地构建则继续叠加硬件配置：
+# docker compose -f compose.yaml -f compose.build.yaml -f compose.hardware.yaml up -d --build
+```
+
+本地构建使用 `photopainter:local`，不依赖 GHCR 镜像是否已发布。真机拉取部署使用 `compose.yaml` 与 `compose.hardware.yaml`；单独使用 `compose.yaml` 是开发用的模拟模式。
 
 在生产镜像的依赖和字体环境中运行同一套测试（测试工具只安装在测试镜像中）：
 

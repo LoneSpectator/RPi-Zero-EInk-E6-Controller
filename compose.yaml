@@ -1,7 +1,6 @@
 services:
   photopainter:
-    build: .
-    image: photopainter:local
+    image: ${IMAGE:-ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest}
     restart: unless-stopped
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
