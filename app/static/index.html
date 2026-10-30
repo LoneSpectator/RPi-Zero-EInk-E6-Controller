@@ -1,9 +1,9 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>墨间 · PhotoPainter</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>RPi-Zero-EInk-E6-Controller</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
 <body>
 <aside class="sidebar">
- <a class="brand" href="#overview"><span class="brand-mark">墨</span><span>墨间<small>PHOTO PAINTER</small></span></a>
+ <a class="brand" href="#overview"><span class="brand-mark" aria-hidden="true">◫</span><span>控制台<small>RPi Zero · E6</small></span></a>
  <div class="nav-label">工作空间</div>
  <nav aria-label="主导航">
   <a href="#overview" data-page="overview"><span>◫</span>概览</a>
@@ -13,10 +13,10 @@
   <a href="#schedule" data-page="schedule"><span>◷</span>排程</a>
  </nav>
  <div class="device-card"><span class="led"></span> RPi Zero PhotoPainter<small>7.3″ E6 · 800 × 480</small><div class="palette"><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
- <div class="side-footer">让每一次显示，慢下来。<br><span>墨间 / E-INK STUDIO</span></div>
+ <div class="side-footer">墨水屏控制台<br><span>800 × 480 · E6</span></div>
 </aside>
 <main>
- <header class="topbar"><span>控制台 <span class="slash">/</span> <strong id="breadcrumb">概览</strong></span><div><span id="connection" class="connection">连接中</span><span class="avatar">墨</span></div></header>
+ <header class="topbar"><span>控制台 <span class="slash">/</span> <strong id="breadcrumb">概览</strong></span><div><span id="connection" class="connection">连接中</span><span class="avatar" aria-hidden="true">◫</span></div></header>
  <div class="workspace">
  <section id="page-overview" class="page">
   <div class="page-heading"><div><div class="eyebrow">YOUR FRAME, AT A GLANCE</div><h1>日常，留在屏上<span>。</span></h1><p>看看此刻的画面，安排下一份灵感。</p></div><a class="button primary" href="#image">＋ 创建内容</a></div>
@@ -49,7 +49,7 @@
  <section id="page-schedule" class="page" hidden>
   <div class="page-heading"><div><div class="eyebrow">MAKE TIME FOR SOMETHING GOOD</div><h1>下一帧，按时见<span>。</span></h1><p>一次特别的时刻，或日复一日的小习惯。</p></div><button id="new-schedule" class="button primary">＋ 新建排程</button></div><div class="notice">设备时区：<strong id="schedule-tz">Asia/Shanghai</strong>。支持五字段 cron，例如 <code>*/30 * * * *</code> 每半小时执行。刷新串行处理；停机超过两分钟的排程跳过并记录，不集中补播。</div><article class="card table-card"><div id="schedule-list"></div></article>
  </section>
- <footer class="main-footer"><span>墨间 · 让灵感停留</span><span>RPi Zero PhotoPainter / E6</span></footer>
+ <footer class="main-footer"><span>RPi-Zero-EInk-E6-Controller</span><span>RPi Zero PhotoPainter / E6</span></footer>
  </div>
 </main>
 <dialog id="schedule-dialog"><form id="schedule-form"><div class="dialog-heading"><h2 id="schedule-dialog-title">新建排程</h2><button type="button" id="close-dialog" class="icon-button" aria-label="关闭">×</button></div><input id="schedule-id" type="hidden"><label>排程名称<input id="schedule-title" required maxlength="120" placeholder="例如：每半小时的风景"></label><label>显示内容<select id="schedule-content" required></select></label><label>执行方式<select id="schedule-kind"><option value="cron">循环 · Cron</option><option value="once">指定日期 · 单次</option></select></label><label id="cron-field">Cron 表达式<input id="schedule-cron" value="*/30 * * * *" placeholder="分 时 日 月 周"><small class="muted">*/30 * * * * 每半小时；0 8 * * * 每天 08:00</small></label><label id="once-field" hidden>执行时间<input id="schedule-once" type="datetime-local" step="60"><small class="muted">按设备时区输入，精确到分钟</small></label><label class="checkbox"><input id="schedule-enabled" type="checkbox" checked>启用此排程</label><p id="schedule-error" class="error-text" role="alert"></p><div class="actions"><button type="button" id="cancel-dialog" class="button secondary">取消</button><button type="submit" class="button primary">保存排程</button></div></form></dialog>

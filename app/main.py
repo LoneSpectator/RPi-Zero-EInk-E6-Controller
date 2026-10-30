@@ -47,7 +47,7 @@ def create_app(settings=None, display=None):
                 app.state.engine.stop()
             lock.close()
 
-    app = FastAPI(title='墨间 · PhotoPainter', lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title='RPi-Zero-EInk-E6-Controller', lifespan=lifespan, docs_url=None, redoc_url=None)
     app.add_middleware(RequestSizeLimit)
     app.state.settings = settings
 
