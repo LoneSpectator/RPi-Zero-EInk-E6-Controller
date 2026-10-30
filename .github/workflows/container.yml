@@ -1,69 +1,69 @@
 name: Container
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+    push:
+        branches: [main]
+        tags: ['v*']
+    pull_request:
+        branches: [main]
+    workflow_dispatch:
 
 permissions:
-  contents: read
+    contents: read
 
 concurrency:
-  group: container-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    group: container-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  publish:
-    name: Build and publish ARM64 image
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          persist-credentials: false
+    publish:
+        name: Build and publish ARM64 image
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        runs-on: ubuntu-24.04-arm
+        timeout-minutes: 45
+        permissions:
+            contents: read
+            packages: write
+        steps:
+            -   name: Check out source
+                uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+                with:
+                    persist-credentials: false
 
-      - name: Compute lowercase registry name
-        id: image
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+            -   name: Compute lowercase registry name
+                id: image
+                run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+            -   name: Set up Docker Buildx
+                uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
-      - name: Log in to GHCR
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+            -   name: Log in to GHCR
+                if: github.event_name != 'pull_request'
+                uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+                with:
+                    registry: ghcr.io
+                    username: ${{ github.actor }}
+                    password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate image tags and OCI labels
-        id: metadata
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ${{ steps.image.outputs.name }}
-          flavor: latest=false
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=long
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            -   name: Generate image tags and OCI labels
+                id: metadata
+                uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+                with:
+                    images: ${{ steps.image.outputs.name }}
+                    flavor: latest=false
+                    tags: |
+                        type=raw,value=latest,enable={{is_default_branch}}
+                        type=sha,format=long
+                        type=semver,pattern={{version}}
+                        type=semver,pattern={{major}}.{{minor}}
 
-      - name: Build and publish ARM64 image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
-        with:
-          context: .
-          platforms: linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.metadata.outputs.tags }}
-          labels: ${{ steps.metadata.outputs.labels }}
-          cache-from: type=gha,scope=container
-          cache-to: type=gha,mode=max,scope=container
+            -   name: Build and publish ARM64 image
+                uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+                with:
+                    context: .
+                    platforms: linux/arm64
+                    push: ${{ github.event_name != 'pull_request' }}
+                    tags: ${{ steps.metadata.outputs.tags }}
+                    labels: ${{ steps.metadata.outputs.labels }}
+                    cache-from: type=gha,scope=container
+                    cache-to: type=gha,mode=max,scope=container

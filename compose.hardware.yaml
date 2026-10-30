@@ -1,13 +1,13 @@
 # Add to compose.yaml on Raspberry Pi Zero 2 W (64-bit Raspberry Pi OS).
 services:
-  photopainter:
-    environment:
-      DISPLAY_DRIVER: waveshare
-      WEB_PASSWORD: ${WEB_PASSWORD:?Set WEB_PASSWORD in .env before hardware startup}
-      INA219_ADDRESS: ${INA219_ADDRESS:-0x43}
-      I2C_BUS: "1"
-      GPIO_CHIP: "0"
-    devices:
-      - /dev/spidev0.0:/dev/spidev0.0
-      - /dev/gpiochip0:/dev/gpiochip0
-      - /dev/i2c-1:/dev/i2c-1
+    photopainter:
+        environment:
+            DISPLAY_DRIVER: waveshare
+            WEB_PASSWORD: ${WEB_PASSWORD:?Set WEB_PASSWORD in .env before hardware startup}
+            INA219_ADDRESS: ${INA219_ADDRESS:-0x43}
+            I2C_BUS: "1"
+            GPIO_CHIP: "0"
+        devices:
+            - /dev/spidev0.0:/dev/spidev0.0
+            - /dev/gpiochip0:/dev/gpiochip0
+            - /dev/i2c-1:/dev/i2c-1

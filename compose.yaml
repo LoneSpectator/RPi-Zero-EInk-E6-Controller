@@ -1,19 +1,19 @@
 services:
-  photopainter:
-    image: ${IMAGE:-ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest}
-    restart: unless-stopped
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
-    environment:
-      DISPLAY_DRIVER: mock
-      TZ: ${TZ:-Asia/Shanghai}
-      WEB_USERNAME: ${WEB_USERNAME:-admin}
-      WEB_PASSWORD: ${WEB_PASSWORD:-}
-    volumes:
-      - ./data:/data
-    stop_grace_period: 5m
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    photopainter:
+        image: ${IMAGE:-ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest}
+        restart: unless-stopped
+        ports:
+            - "${BIND_ADDRESS:-127.0.0.1}:8000:8000"
+        environment:
+            DISPLAY_DRIVER: mock
+            TZ: ${TZ:-Asia/Shanghai}
+            WEB_USERNAME: ${WEB_USERNAME:-admin}
+            WEB_PASSWORD: ${WEB_PASSWORD:-}
+        volumes:
+            - ./data:/data
+        stop_grace_period: 5m
+        logging:
+            driver: json-file
+            options:
+                max-size: "10m"
+                max-file: "3"
