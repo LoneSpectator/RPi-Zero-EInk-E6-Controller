@@ -8,27 +8,17 @@
 - **内容库**：保存内容、搜索、按类型筛选、重复显示、删除、添加排程。预览不入库，保存或“确认并刷新”才入库，每次成功显示更新显示时间。
 - **排程**：增删改查、启用/停用，指定日期的某一分钟或五字段 cron。SQLite 持久化，串行刷新，执行结果可查。
 
-## 容器镜像与自动构建
+## 容器镜像
 
-- **GitHub 容器页面**：[rpi-zero-eink-e6-controller](https://github.com/LoneSpectator/RPi-Zero-EInk-E6-Controller/pkgs/container/rpi-zero-eink-e6-controller)
-- **镜像地址**：`ghcr.io/lonespectator/rpi-zero-eink-e6-controller`
-- **构建状态与日志**：[GitHub Actions · Container](https://github.com/LoneSpectator/RPi-Zero-EInk-E6-Controller/actions/workflows/container.yml)
+- **容器页面**：[GitHub Container Registry](https://github.com/LoneSpectator/RPi-Zero-EInk-E6-Controller/pkgs/container/rpi-zero-eink-e6-controller)
+- **默认镜像**：`ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest`
+- **支持架构**：`linux/arm64`（64 位 ARM）
 
-推送到 `main` 或推送 `v*` 版本标签时，GitHub Actions 在 ARM64 runner（`ubuntu-24.04-arm`）上直接构建并发布仅供目标设备使用的 `linux/arm64` 镜像。不发布 amd64 或 armv7 镜像；宿主系统必须为 64 位 ARM。Pull Request 仅检查 ARM64 镜像能否构建，不运行模拟测试、不发布镜像；也可在 Actions 页面手动运行默认分支的工作流。
-
-| 镜像标签 | 用途 |
-| --- | --- |
-| `latest` | `main` 最近一次成功发布的镜像 |
-| `sha-<完整提交 SHA>` | 固定到某次构建的源码提交 |
-| `1.2.3`、`1.2` | 推送 `v1.2.3` 等版本标签后生成 |
-
-镜像构建成功只表示容器可以完成构建，不代表实体屏幕或电池功能已通过验收。工作流不运行模拟测试作为发布门槛，硬件验收按下文在目标树莓派上完成。
-
-镜像已公开，可匿名拉取，无需 `docker login`。自动发布使用 GitHub 提供的 `GITHUB_TOKEN` 和工作流中的 `packages: write` 权限，无需额外配置个人访问令牌。
+镜像公开，可直接拉取，无需登录。默认使用 `latest`；需要固定版本时，可在 `.env` 中将 `IMAGE` 设置为容器页面列出的版本标签或 `sha-<完整提交 SHA>` 标签。
 
 ## 树莓派真机部署
 
-目标环境为 **Pi Zero 2 W + 64 位 Raspberry Pi OS（arm64）**。直接拉取 GitHub Actions 发布的 `linux/arm64` 镜像，无需在设备上构建或编译依赖。首次拉取会下载驱动依赖和全部字体；amd64 和 32 位 armv7 不在发布范围内。
+目标环境为 **Pi Zero 2 W + 64 位 Raspberry Pi OS（arm64）**。直接拉取预构建的 `linux/arm64` 镜像，无需在设备上构建或编译依赖。首次拉取会下载驱动依赖和全部字体；amd64 和 32 位 armv7 不在发布范围内。
 
 1. 按[微雪 Wiki](https://www.waveshare.net/wiki/RPi_Zero_PhotoPainter)连接设备，确认是 E6 六色版本。使用 `sudo raspi-config` 开启 **SPI** 和 **I²C**，按提示重启。
 2. 确认宿主机有 `/dev/spidev0.0`、`/dev/gpiochip0` 和 `/dev/i2c-1`。先停止微雪测试程序、原有 cron/相框服务，确保没有其他程序占用这些引脚。
@@ -64,7 +54,7 @@ docker compose -f compose.yaml -f compose.hardware.yaml logs -f
 
 驱动来自[微雪官方产品仓库](https://github.com/waveshareteam/RPi_Zero_PhotoPainter)，固定来源提交见 [NOTICE](app/vendor/NOTICE.md)，保留上游许可声明；GPIO 容器适配独立实现。BUSY 有超时保护，异常会释放硬件资源。
 
-首次真机验收：在图片页面上传测试图片，生成预览并确认刷新；等待概览显示刷新完成，然后核对物理屏幕的方向与颜色，再核对电池电压。**当前云端只完成模拟与容器测试，未进行实体屏幕、INA219 和 arm64 真机验收。** 电子纸刷新较慢，过程中闪烁属驱动刷新行为，不支持局部或视频刷新，请避免频繁刷新。
+首次部署后，上传测试图片并刷新，核对物理屏幕的方向、颜色和电池电压。**实体屏幕、INA219 电池监测和 arm64 真机运行尚未完成验证。** 电子纸刷新较慢，过程中闪烁属驱动刷新行为，不支持局部或视频刷新，请避免频繁刷新。
 
 ### “屏幕实时状态”的含义
 
@@ -149,7 +139,7 @@ docker compose start
 
 开发使用 Python 3.12；本地开发需安装上述五种中文字体（Debian/Ubuntu：`fonts-wqy-zenhei fonts-arphic-uming fonts-arphic-ukai fonts-noto-cjk`）。Docker 镜像已包含它们。
 
-模拟模式仅用于调试排程、内容管理和接口逻辑，不验证 GPIO/SPI 接线、实际刷屏或 INA219 读数；生产部署使用上面的真机配置。以下本地检查是可选的软件回归检查，不作为 Actions 发布前置。
+模拟模式仅用于调试排程、内容管理和接口逻辑，不验证 GPIO/SPI 接线、实际刷屏或 INA219 读数；生产部署使用上面的真机配置。以下命令用于本地软件回归检查。
 
 ```bash
 python3 -m venv .venv
@@ -196,12 +186,8 @@ docker build -f Dockerfile.test -t photopainter:test .
 docker run --rm photopainter:test
 ```
 
-受限网络构建时需允许 Docker Hub、Debian 软件源和 PyPI；若环境提供 HTTPS 代理，按 Docker 标准方式传入 `HTTP_PROXY` / `HTTPS_PROXY` 构建参数。镜像支持可选 BuildKit secret `proxy_ca` 传入受信任的构建 CA 文件；保留 TLS、APT 签名和包校验，不关闭证书验证。
-
 ## AI 编码声明
 
 本项目使用 **OpenAI Codex** 进行 AI 辅助开发。初始版本的应用代码、Web 控制台、容器配置、测试和文档主要由 AI 根据项目维护者提出的需求生成并迭代。此声明说明代码的开发来源，不表示已完成人工逐行审查。
-
-初始实现已在云端通过 36 项自动化测试，以及浏览器交互、跨时区排程、实际分钟触发和容器重启恢复验证；**实体墨水屏刷新、INA219 电池读取和 arm64 真机运行尚未验收**。AI 生成的实现仍可能存在缺陷，部署前应结合硬件文档进行人工审查和真机验证。
 
 微雪电子纸驱动属于引用的第三方代码，其来源、固定版本和许可说明见 [驱动声明](app/vendor/NOTICE.md)。本声明不改变项目的 [许可证](LICENSE)，也不改变第三方代码、依赖和字体各自的许可与署名要求。
