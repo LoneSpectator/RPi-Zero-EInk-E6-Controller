@@ -208,7 +208,7 @@ def test_worker_failure_never_updates_current(settings):
 
 def test_recovery_and_persistent_pending(settings):
     engine, store = deterministic_engine(settings)
-    first = engine.enqueue('c'); second = engine.enqueue('c')
+    first = engine.enqueue('c'); second = engine.enqueue('c', require_idle=False)
     with store.connection() as db:
         db.execute("UPDATE jobs SET status='running' WHERE id=?", (first,))
     recovered = Engine(Store(settings.data_dir), settings)
@@ -225,8 +225,8 @@ def test_recovery_and_persistent_pending(settings):
 
 def test_queue_capacity(settings):
     engine, _ = deterministic_engine(settings)
-    for _ in range(MAX_PENDING):engine.enqueue('c')
-    with pytest.raises(ValueError,match='队列已满'):engine.enqueue('c')
+    for _ in range(MAX_PENDING):engine.enqueue('c', require_idle=False)
+    with pytest.raises(ValueError,match='队列已满'):engine.enqueue('c', require_idle=False)
 
 
 def test_auth_and_cross_origin(settings):
@@ -318,3 +318,80 @@ def test_preview_image_preserves_exif_orientation():
     rendered=render_image(buf.getvalue(),'contain')
     assert rendered.getpixel((400,10)) == (255,255,255)
     assert rendered.getpixel((20,240)) == (255,0,0)
+
+
+def test_pending_manual_refresh_is_rejected_without_adding_a_job(settings):
+    from app.engine import DisplayBusyError
+    engine, store = deterministic_engine(settings)  # No worker: first job stays pending.
+    engine.enqueue('c')
+    with pytest.raises(DisplayBusyError, match='正在刷新或等待刷新'):
+        engine.enqueue('c')
+    assert len(store.rows('SELECT * FROM jobs')) == 1
+
+
+class BlockingDisplay:
+    def __init__(self, fail=False):
+        import threading
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.fail = fail
+
+    def display(self, image):
+        self.started.set()
+        if not self.release.wait(5):
+            raise TimeoutError('test display was not released')
+        if self.fail:
+            raise OSError('test refresh failure')
+
+
+@pytest.mark.parametrize('scheduled', [False, True])
+@pytest.mark.parametrize('fail', [False, True])
+def test_manual_refresh_rejected_while_busy_and_restored_after_completion(settings, scheduled, fail):
+    display = BlockingDisplay(fail)
+    app = create_app(settings, display=display)
+    with TestClient(app) as client:
+        try:
+            item = upload(client)
+            if scheduled:
+                with app.state.store.connection() as db:
+                    db.execute("INSERT INTO schedules VALUES('due','scheduled',?,'once',?,NULL,1,?,?)", (item['id'], now_ts(), now_ts(), now_ts()))
+                app.state.engine.tick()
+                job_id = app.state.store.one('SELECT id FROM jobs')['id']
+            else:
+                job_id = client.post(f"/api/contents/{item['id']}/display").json()['job_id']
+            assert display.started.wait(2)
+            status = client.get('/api/status').json()
+            assert status['display_busy'] and status['screen']['status'] == 'refreshing'
+            second = upload(client, title='刷新时仍可保存内容')
+            response = client.post(f"/api/contents/{second['id']}/display")
+            assert response.status_code == 409 and '正在刷新' in response.json()['detail']
+            assert len(app.state.store.rows('SELECT * FROM jobs')) == 1
+            display.release.set()
+            assert wait_job(client, job_id)['status'] == ('failed' if fail else 'done')
+            assert client.get('/api/status').json()['display_busy'] is False
+            # A failed refresh must release the gate just as a successful one does.
+            retry = client.post(f"/api/contents/{second['id']}/display")
+            assert retry.status_code == 202
+            wait_job(client, retry.json()['job_id'])
+        finally:
+            display.release.set()
+
+
+def test_concurrent_manual_requests_accept_exactly_one(settings):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    display = BlockingDisplay()
+    app = create_app(settings, display=display)
+    with TestClient(app) as client:
+        try:
+            item = upload(client)
+            barrier = Barrier(2)
+            def submit():
+                barrier.wait(timeout=2)
+                return client.post(f"/api/contents/{item['id']}/display").status_code
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = list(pool.map(lambda _: submit(), range(2)))
+            assert sorted(responses) == [202, 409]
+            assert len(app.state.store.rows('SELECT * FROM jobs')) == 1
+        finally:
+            display.release.set()

@@ -17,7 +17,7 @@ from .config import Settings
 from .models import TextContent, ScheduleInput
 from .render import render_text, render_image, png, font_status
 from .store import Store, new_id, now_ts
-from .engine import Engine, schedule_values
+from .engine import DisplayBusyError, Engine, schedule_values
 from .hardware import battery_status
 
 STATIC = Path(__file__).parent / 'static'
@@ -79,6 +79,10 @@ def create_app(settings=None, display=None):
     async def invalid(request, exc):
         return JSONResponse({'detail': str(exc)}, status_code=422)
 
+    @app.exception_handler(DisplayBusyError)
+    async def display_busy(request, exc):
+        return JSONResponse({'detail': str(exc)}, status_code=409)
+
     @app.exception_handler(LookupError)
     async def missing(request, exc):
         return JSONResponse({'detail': str(exc)}, status_code=404)
@@ -124,11 +128,17 @@ def create_app(settings=None, display=None):
 
     @app.get('/api/status', dependencies=[Depends(auth)])
     def status():
-        state = store().one('SELECT * FROM display_state')
-        running = store().one("SELECT id,title FROM jobs WHERE status='running' LIMIT 1")
+        # Read the display and queue from one snapshot, even as the worker starts
+        # or finishes a refresh in another thread.
+        with store().connection() as db:
+            db.execute('BEGIN')
+            state = dict(db.execute('SELECT * FROM display_state').fetchone())
+            row = db.execute("SELECT id,title FROM jobs WHERE status='running' LIMIT 1").fetchone()
+            running = dict(row) if row else None
+            pending = db.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
         return {'now': datetime.now(ZoneInfo(settings.timezone)).isoformat(), 'timezone': settings.timezone,
                 'driver': settings.driver, 'battery': battery_status(settings.driver), 'screen': state,
-                'running': running, 'pending': store().one("SELECT COUNT(*) AS n FROM jobs WHERE status='pending'")['n'],
+                'running': running, 'pending': pending, 'display_busy': bool(running or pending),
                 'fonts': font_status(), 'auth_enabled': bool(settings.password),
                 'upcoming': store().rows('SELECT s.*,c.title AS content_title FROM schedules s JOIN contents c ON c.id=s.content_id WHERE enabled=1 ORDER BY next_run LIMIT 6'),
                 'jobs': store().rows('SELECT * FROM jobs ORDER BY created_at DESC,rowid DESC LIMIT 12')}

@@ -3,6 +3,24 @@ const $ = id => document.getElementById(id);
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state = null, contents = [], schedules = [], clockOffset = 0, lastSnapshot = null;
 let toastTimer;
+let statusAvailable = false, statusRequest = 0;
+let displaySubmitting = false, displayAwaitingStatus = false;
+const saving = {image:false, text:false};
+
+function syncDisplayControls() {
+  const reason = !statusAvailable ? '无法确认屏幕状态，暂不能提交刷新，正在重新连接。'
+    : displaySubmitting ? '正在提交刷新，请稍候。'
+    : displayAwaitingStatus || state.display_busy ? '屏幕正在刷新或等待刷新，完成后才能再次提交。' : '';
+  $('refresh-notice').textContent=reason; $('refresh-notice').hidden=!reason;
+  for(const type of ['image','text']) {
+    $(type+'-save').disabled=!previews[type] || saving[type];
+    $(type+'-display').disabled=!previews[type] || saving[type] || Boolean(reason);
+    $(type+'-display').title=reason;
+  }
+  document.querySelectorAll('[data-display]').forEach(button=>{
+    button.disabled=Boolean(reason); button.title=reason;
+  });
+}
 const previews = {image:null, text:null};
 const versions = {image:0, text:0};
 const urls = {};
@@ -43,8 +61,11 @@ function clock() {
   $('clock-date').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,year:'numeric',month:'long',day:'numeric',weekday:'long'}).format(date)+' · '+state.timezone;
 }
 async function refreshStatus() {
+  const request=++statusRequest;
   try {
-    state=await api('/api/status'); clockOffset=new Date(state.now).getTime()-Date.now(); clock();
+    const next=await api('/api/status');
+    if(request!==statusRequest)return;
+    state=next; statusAvailable=true; displayAwaitingStatus=false; syncDisplayControls(); clockOffset=new Date(state.now).getTime()-Date.now(); clock();
     $('connection').textContent=state.driver==='mock'?'模拟设备已连接':'设备服务已连接';
     $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。'+(!state.auth_enabled?' 当前未启用登录，请仅在可信本地环境使用。':''):'';
     $('battery').innerHTML=state.battery.available?`${state.battery.percent}<small> %</small>`:'—<small> %</small>';
@@ -60,7 +81,7 @@ async function refreshStatus() {
     $('upcoming').innerHTML=state.upcoming.length?state.upcoming.map(s=>`<div class="upcoming-item"><div class="schedule-time">${escapeHTML(formatTime(s.next_run,{month:undefined,day:undefined}))}<small>${escapeHTML(formatTime(s.next_run,{hour:undefined,minute:undefined}))}</small></div><div><strong>${escapeHTML(s.content_title)}</strong><p>${escapeHTML(s.title)} · ${s.kind==='cron'?'循环':'单次'}</p></div></div>`).join(''):'<div class="empty-state">把下一帧交给时间<br><a class="text-link" href="#schedule">创建你的第一个排程 ↗</a></div>';
     $('job-history').innerHTML=state.jobs.length?state.jobs.map(j=>`<div class="history-row"><span>${escapeHTML(j.title)}${j.error?`<small class="error-text"> ${escapeHTML(j.error)}</small>`:''}</span><span class="muted">${j.scheduled_for?'定时':'手动'}</span><time class="muted">${escapeHTML(formatTime(j.created_at))}</time><span class="job-state ${j.status==='failed'?'failed':''}">${escapeHTML(labels[j.status])}</span></div>`).join(''):'<div class="empty-state">还没有刷新记录</div>';
     $('schedule-tz').textContent=state.timezone;
-  } catch(e){$('connection').textContent='连接异常'; if(!state)toast(e.message,true);}
+  } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); $('connection').textContent='连接异常'; if(!state)toast(e.message,true);}
 }
 async function refreshContents(){contents=await api('/api/contents');$('library-count').textContent=contents.length;renderLibrary();}
 function renderLibrary(){
@@ -68,6 +89,7 @@ function renderLibrary(){
   const filtered=contents.filter(c=>c.title.toLowerCase().includes(query)&&(filter==='all'||filter===c.kind));
   $('library-summary').textContent=`共 ${filtered.length} 份内容`;
   $('library-grid').innerHTML=filtered.length?filtered.map(c=>`<article class="card"><div class="content-thumb"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"></div><div class="content-info"><h3>${escapeHTML(c.title)}</h3><p>${c.kind==='text'?'文本':'图片'} · ${escapeHTML(formatTime(c.created_at))}</p><p>${c.last_displayed?'最近显示 '+escapeHTML(formatTime(c.last_displayed)):'已保存 · 尚未显示'}</p></div><div class="content-actions"><button class="text-button" data-display="${c.id}">显示 ↗</button><button class="text-button" data-schedule="${c.id}">排程</button><button class="text-button danger" data-delete="${c.id}">删除</button></div></article>`).join(''):'<div class="empty-state">这里还没有内容<br><a href="#image" class="text-link">上传第一张照片 ↗</a></div>';
+  syncDisplayControls();
 }
 $('library-search').addEventListener('input',renderLibrary);$('library-filter').addEventListener('change',renderLibrary);
 $('library-grid').addEventListener('click',async e=>{
@@ -78,7 +100,7 @@ $('library-grid').addEventListener('click',async e=>{
     if(button.dataset.delete && confirm('删除这份内容？当前物理画面不会被清除。引用它的排程需先删除。')){await api('/api/contents/'+button.dataset.delete,{method:'DELETE'});await refreshContents();toast('内容已删除');}
   }catch(err){toast(err.message,true);}
 });
-function invalidate(type){versions[type]++;previews[type]=null;$(type+'-save').disabled=true;$(type+'-display').disabled=true;}
+function invalidate(type){versions[type]++;previews[type]=null;syncDisplayControls();}
 let selectedFile=null;
 function selectFile(file){selectedFile=file;$('file-label').textContent=file?file.name:'点击选择，或拖入一张图片';if(file&&!$('image-title').value)$('image-title').value=file.name.replace(/\.[^.]+$/,'');invalidate('image');}
 $('image-file').addEventListener('change',e=>selectFile(e.target.files[0]));
@@ -146,19 +168,41 @@ async function preview(type){
     if(version!==versions[type])return;
     if(urls[type])URL.revokeObjectURL(urls[type]);urls[type]=URL.createObjectURL(blob);
     $(type+'-result').src=urls[type];$(type+'-result').hidden=false;$(type+'-placeholder').hidden=true;
-    previews[type]={payload,id:null,version};$(type+'-save').disabled=false;$(type+'-display').disabled=false;
+    previews[type]={payload,id:null,version};syncDisplayControls();
   }catch(e){toast(e.message,true);}finally{button.disabled=false;}
 }
 async function save(type,display){
   const preview=previews[type];if(!preview){toast('请先重新生成预览',true);return;}
-  $(type+'-save').disabled=true;$(type+'-display').disabled=true;
+  if(saving[type])return;
+  saving[type]=true;syncDisplayControls();
   try{
-    if(!preview.id){const result=await api('/api/contents/'+type,{method:'POST',...(type==='image'?{body:preview.payload}:json(preview.payload))});preview.id=result.id;}
-    if(display)await displayContent(preview.id);else toast('内容已保存，可在内容库和排程中使用');
+    const persist=async()=>{
+      if(!preview.id){const result=await api('/api/contents/'+type,{method:'POST',...(type==='image'?{body:preview.payload}:json(preview.payload))});preview.id=result.id;}
+      return preview.id;
+    };
+    if(display)await requestDisplay(persist);else {await persist();toast('内容已保存，可在内容库和排程中使用');}
     await refreshContents();
-  }catch(e){toast(e.message,true);}finally{if(previews[type]===preview){$(type+'-save').disabled=false;$(type+'-display').disabled=false;}}
+  }catch(e){toast(e.message,true);}finally{saving[type]=false;syncDisplayControls();}
 }
-async function displayContent(id){const r=await api(`/api/contents/${id}/display`,{method:'POST'});toast('已加入刷新队列，可在概览查看结果');await refreshStatus();return r;}
+async function requestDisplay(resolveId){
+  if(displaySubmitting || displayAwaitingStatus)throw new Error('正在提交刷新，请稍候');
+  displaySubmitting=true;syncDisplayControls();
+  try{
+    // Preflight before saving a new content snapshot. The backend rechecks
+    // atomically so another tab or a schedule cannot race this request.
+    const latest=await api('/api/status');
+    if(latest.display_busy)throw new Error('屏幕正在刷新或等待刷新，请完成后再提交');
+    const id=await resolveId();
+    const result=await api(`/api/contents/${id}/display`,{method:'POST'});
+    displayAwaitingStatus=true; ++statusRequest; // Discard polls begun before acceptance.
+    toast('已加入刷新队列，可在概览查看结果');
+    return result;
+  }finally{
+    await refreshStatus();
+    displaySubmitting=false;syncDisplayControls();
+  }
+}
+async function displayContent(id){return requestDisplay(async()=>id);}
 for(const type of ['image','text']){$(type+'-preview').addEventListener('click',()=>preview(type));$(type+'-save').addEventListener('click',()=>save(type,false));$(type+'-display').addEventListener('click',()=>save(type,true));}
 async function refreshSchedules(){schedules=await api('/api/schedules');renderSchedules();}
 function renderSchedules(){
@@ -206,7 +250,7 @@ $('schedule-list').addEventListener('click',async e=>{
     if(b.dataset.remove&&confirm('删除此排程？已进入刷新队列的任务仍会执行。')){await api('/api/schedules/'+b.dataset.remove,{method:'DELETE'});await refreshSchedules();await refreshStatus();toast('排程已删除');}
   }catch(err){toast(err.message,true);}
 });
-page();refreshStatus();refreshContents().catch(e=>toast(e.message,true));
+syncDisplayControls();page();refreshStatus();refreshContents().catch(e=>toast(e.message,true));
 setInterval(clock,1000);
 // Recursive timer avoids overlapping requests when hardware telemetry is slow.
-async function poll(){await refreshStatus();if(location.hash==='#schedule')await refreshSchedules().catch(()=>{});setTimeout(poll,4000);}setTimeout(poll,4000);
+async function poll(){await refreshStatus();if(location.hash==='#schedule')await refreshSchedules().catch(()=>{});setTimeout(poll,state?.display_busy || displayAwaitingStatus ? 1000 : 4000);}setTimeout(poll,4000);

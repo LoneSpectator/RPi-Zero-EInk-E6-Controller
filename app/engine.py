@@ -13,6 +13,10 @@ GRACE_SECONDS = 120
 MAX_PENDING = 20
 
 
+class DisplayBusyError(Exception):
+    """A manual refresh cannot be accepted until the display queue is idle."""
+
+
 def next_cron(expression, after, tz):
     if not expression or len(expression.split()) != 5:
         raise ValueError('cron 必须恰好为五字段：分 时 日 月 周')
@@ -65,12 +69,16 @@ class Engine:
         for thread in self.threads:
             thread.join(timeout=245)
 
-    def enqueue(self, content_id):
+    def enqueue(self, content_id, *, require_idle=True):
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             content = db.execute('SELECT * FROM contents WHERE id=?', (content_id,)).fetchone()
             if not content:
                 raise LookupError('内容不存在')
+            # Check and insert under the same write transaction. This also covers
+            # the gap before a newly accepted job is picked up by the worker.
+            if require_idle and db.execute("SELECT id FROM jobs WHERE status IN ('pending','running') LIMIT 1").fetchone():
+                raise DisplayBusyError('屏幕正在刷新或等待刷新，请完成后再提交')
             if db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('pending','running')").fetchone()[0] >= MAX_PENDING:
                 raise ValueError('刷新队列已满，请稍后重试')
             job_id = new_id()
