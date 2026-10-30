@@ -1,5 +1,0 @@
-# Local source build; add compose.hardware.yaml as well for a real device.
-services:
-    photopainter:
-        build: .
-        image: photopainter:local

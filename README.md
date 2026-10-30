@@ -35,9 +35,9 @@ cp .env.example .env
 拉取镜像并启动真机服务：
 
 ```bash
-docker compose -f compose.yaml -f compose.hardware.yaml pull
-docker compose -f compose.yaml -f compose.hardware.yaml up -d
-docker compose -f compose.yaml -f compose.hardware.yaml logs -f
+docker compose pull
+docker compose up -d
+docker compose logs -f
 ```
 
 浏览器访问树莓派的 **8000 端口**，使用 `.env` 中的用户和密码登录（默认用户 `admin`）。默认只绑定 `127.0.0.1`；设置 `BIND_ADDRESS=0.0.0.0` 后才允许局域网访问。跨不可信网络访问时，在前面部署 HTTPS 反向代理。
@@ -103,12 +103,12 @@ docker compose -f compose.yaml -f compose.hardware.yaml logs -f
 
 `./data` 挂载为 `/data`，包含 SQLite 数据库、内容 PNG、最后成功下发图与实例锁。拉取和更新镜像不会清除这些数据。预览不落盘，图片保存的是屏幕分辨率的六色图，不保留原始上传文件，文本保留结构化文档。单份内容是不可变快照；需要修改时新建一份。
 
-真机更新须继续使用同一组配置文件，保留设备映射：
+更新镜像：
 
 ```bash
 git pull --ff-only
-docker compose -f compose.yaml -f compose.hardware.yaml pull
-docker compose -f compose.yaml -f compose.hardware.yaml up -d
+docker compose pull
+docker compose up -d
 ```
 
 保留已有 `.env` 和 `data/`，不要再次复制示例覆盖配置。修改 `IMAGE` 可切换到已发布的指定版本。
@@ -126,11 +126,10 @@ docker compose start
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `IMAGE` | `ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest` | Compose 使用的镜像，可固定版本 |
-| `DISPLAY_DRIVER` | `mock` | `mock` 或 `waveshare`；真机模式必须设置密码 |
+| `DISPLAY_DRIVER` | `waveshare` | 部署配置使用真机驱动；本地调试可设为 `mock` |
 | `DATA_DIR` | `/data` | 数据目录 |
 | `TZ` | `Asia/Shanghai` | IANA 时区 |
 | `WEB_USERNAME` / `WEB_PASSWORD` | `admin` / 空 | Basic 登录凭据，不写入源码 |
-| `MOCK_REFRESH_SECONDS` | `2` | 模拟刷新时长 |
 | `GPIO_CHIP` | `0` | GPIO 芯片编号；更改时同时更改 devices 映射 |
 | `I2C_BUS` / `INA219_ADDRESS` | `1` / `0x43` | 电池传感器配置 |
 | `EPD_BUSY_TIMEOUT` | `180` | 单阶段 BUSY 超时秒数，总硬件操作另有 240 秒上限 |
@@ -168,15 +167,14 @@ CHROMIUM_PATH=/usr/bin/chromium .venv/bin/python -m scripts.browser_refresh_smok
 
 主要目录：`app/main.py` API，`render.py` 排版与量化，`engine.py` 队列/排程，`hardware.py` 真机/模拟驱动与电池，`store.py` 数据库，`static/` 控制台。健康检查为 `/api/health`，状态为 `/api/status`；配置密码后 API 同样要求 Basic 登录。
 
-需要从本地源码构建并运行容器时，显式叠加 `compose.build.yaml`：
+从源码构建部署镜像时，在目标树莓派上执行：
 
 ```bash
-docker compose -f compose.yaml -f compose.build.yaml up -d --build
-# 真机本地构建则继续叠加硬件配置：
-# docker compose -f compose.yaml -f compose.build.yaml -f compose.hardware.yaml up -d --build
+docker build -t photopainter:local .
+IMAGE=photopainter:local docker compose up -d --pull never
 ```
 
-本地构建使用 `photopainter:local`，不依赖 GHCR 镜像是否已发布。真机拉取部署使用 `compose.yaml` 与 `compose.hardware.yaml`；单独使用 `compose.yaml` 是开发用的模拟模式。
+部署统一使用 `docker-compose.yml`，其中已配置真机驱动与 SPI、GPIO、I²C 设备映射。本地构建通过 `IMAGE` 选择镜像，无需额外的覆盖配置文件。
 
 在生产镜像的依赖和字体环境中运行同一套测试（测试工具只安装在测试镜像中）：
 
