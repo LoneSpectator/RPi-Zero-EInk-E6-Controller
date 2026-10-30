@@ -1,6 +1,6 @@
 # RPi-Zero-EInk-E6-Controller
 
-一个 Python 墨水屏控制程序：FastAPI + Pillow + SQLite，原生 HTML/CSS/JavaScript 控制台，无前端构建步骤。面向 **Raspberry Pi Zero 2 W + Waveshare 7.3 英寸 E6 六色电子纸（800×480）**，通过 ARM64 容器部署到目标树莓派。
+一个 Python 墨水屏控制程序：FastAPI + Pillow + SQLite，原生 HTML/CSS/JavaScript 控制台，无前端构建步骤。面向[**微雪7.3寸E6全彩色电子墨水屏**](https://www.waveshare.net/shop/RPi-Zero2W-PhotoPainter.htm)产品，通过 ARM64 容器部署到目标树莓派。
 
 - **概览**：设备系统时间、设备时区、电池电压与估算电量、刷新状态、最后成功下发画面、最近记录、即将执行的排程。
 - **图片**：上传 JPG/PNG（12 MiB、2000 万像素以内），完整等比显示（白色留边）或居中裁剪铺满；自动处理 EXIF 方向、透明背景和六色抖动。
