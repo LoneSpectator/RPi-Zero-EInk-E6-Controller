@@ -3,8 +3,8 @@ from datetime import datetime
 from pathlib import Path
 import fcntl
 import json
+import logging
 import secrets
-import sqlite3
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .limits import RequestSizeLimit
 from .config import Settings
-from .models import TextContent, ScheduleInput
+from .models import TextContent, ScheduleInput, ContentsDelete
 from .render import render_text, render_image, png, font_status
 from .store import Store, new_id, now_ts
 from .engine import DisplayBusyError, Engine, schedule_values
@@ -176,19 +176,43 @@ def create_app(settings=None, display=None):
         content(content_id)
         return FileResponse(store().image_path(content_id), media_type='image/png')
 
-    @app.delete('/api/contents/{content_id}', dependencies=[Depends(auth)])
-    def delete_content(content_id: str):
+    def delete_contents(content_ids):
+        content_ids = list(dict.fromkeys(content_ids))
         with store().connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            if not db.execute('SELECT id FROM contents WHERE id=?', (content_id,)).fetchone():
-                raise HTTPException(404, '内容不存在')
-            if db.execute("SELECT id FROM jobs WHERE content_id=? AND status IN ('pending','running')", (content_id,)).fetchone():
-                raise HTTPException(409, '内容正在刷新或等待刷新')
+            items = []
+            # Chunk SQL parameters while keeping the entire selection atomic.
+            for offset in range(0, len(content_ids), 500):
+                batch = content_ids[offset:offset + 500]
+                placeholders = ','.join('?' for _ in batch)
+                items.extend(db.execute(f'''SELECT c.id,c.title,
+                    EXISTS(SELECT 1 FROM jobs j WHERE j.content_id=c.id AND j.status IN ('pending','running')) AS busy,
+                    EXISTS(SELECT 1 FROM schedules s WHERE s.content_id=c.id) AS scheduled
+                    FROM contents c WHERE c.id IN ({placeholders})''', batch).fetchall())
+            if len(items) != len(content_ids):
+                raise HTTPException(404, '部分内容已不存在，本次未删除任何内容，请刷新列表后重试')
+            blocked = [item['title'] for item in items if item['busy'] or item['scheduled']]
+            if blocked:
+                names = '、'.join(blocked[:3]) + (f'等 {len(blocked)} 项' if len(blocked) > 3 else '')
+                raise HTTPException(409, '以下内容正在刷新或被排程引用，本次未删除任何内容：' + names)
+            for offset in range(0, len(content_ids), 500):
+                batch = content_ids[offset:offset + 500]
+                placeholders = ','.join('?' for _ in batch)
+                db.execute(f'DELETE FROM contents WHERE id IN ({placeholders})', batch)
+        for content_id in content_ids:
             try:
-                db.execute('DELETE FROM contents WHERE id=?', (content_id,))
-            except sqlite3.IntegrityError:
-                raise HTTPException(409, '请先删除引用该内容的排程（含已停用排程）')
-        store().image_path(content_id).unlink(missing_ok=True)
+                store().image_path(content_id).unlink(missing_ok=True)
+            except OSError:
+                logging.getLogger(__name__).warning('Deleted content image cleanup failed: %s', content_id, exc_info=True)
+        return content_ids
+
+    @app.post('/api/contents/delete', dependencies=[Depends(auth)])
+    def delete_selected_contents(spec: ContentsDelete):
+        return {'deleted_ids': delete_contents(spec.content_ids)}
+
+    @app.delete('/api/contents/{content_id}', dependencies=[Depends(auth)])
+    def delete_content(content_id: str):
+        delete_contents([content_id])
         return {'deleted': True}
 
     @app.post('/api/contents/{content_id}/display', dependencies=[Depends(auth)], status_code=202)

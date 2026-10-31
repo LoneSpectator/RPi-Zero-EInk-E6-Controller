@@ -3,6 +3,8 @@ const $ = id => document.getElementById(id);
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state = null, contents = [], schedules = [], clockOffset = 0, lastSnapshot = null;
 let toastTimer;
+const selectedContents = new Set();
+let libraryDeleting = false, deleteTargets = [];
 let statusAvailable = false, statusRequest = 0;
 let displaySubmitting = false, displayAwaitingStatus = false;
 const saving = {image:false, text:false};
@@ -88,21 +90,73 @@ async function refreshStatus() {
   } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); $('connection').textContent='连接异常'; if(!state)toast(e.message,true);}
 }
 async function refreshContents(){contents=await api('/api/contents');$('library-count').textContent=contents.length;renderLibrary();}
-function renderLibrary(){
+function filteredContents(){
   const query=$('library-search').value.trim().toLowerCase(),filter=$('library-filter').value;
-  const filtered=contents.filter(c=>c.title.toLowerCase().includes(query)&&(filter==='all'||filter===c.kind));
+  return contents.filter(c=>c.title.toLowerCase().includes(query)&&(filter==='all'||filter===c.kind));
+}
+function syncLibrarySelection(){
+  const visible=filteredContents(), count=selectedContents.size;
+  $('library-delete').hidden=!count;
+  $('library-delete').textContent=`删除（${count}）`;
+  $('library-delete').disabled=libraryDeleting;
+  $('library-select-all').checked=visible.length>0 && count===visible.length;
+  $('library-select-all').indeterminate=count>0 && count<visible.length;
+  $('library-select-all').disabled=libraryDeleting || !visible.length;
+  $('library-search').disabled=libraryDeleting;$('library-filter').disabled=libraryDeleting;
+  document.querySelectorAll('[data-select-content]').forEach(box=>{
+    box.checked=selectedContents.has(box.dataset.selectContent);box.disabled=libraryDeleting;
+    box.closest('tr').classList.toggle('selected',box.checked);
+  });
+  for(const id of ['confirm-delete','cancel-delete','close-delete'])$(id).disabled=libraryDeleting;
+  $('confirm-delete').textContent=libraryDeleting?'正在删除…':'确认删除';
+}
+function renderLibrary(){
+  const filtered=filteredContents(), visibleIds=new Set(filtered.map(c=>c.id));
+  for(const id of selectedContents)if(!visibleIds.has(id))selectedContents.delete(id);
   $('library-summary').textContent=`共 ${filtered.length} 份内容`;
-  $('library-grid').innerHTML=filtered.length?filtered.map(c=>`<article class="card"><div class="content-thumb"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"></div><div class="content-info"><h3>${escapeHTML(c.title)}</h3><p>${c.kind==='text'?'文本':'图片'} · ${escapeHTML(formatTime(c.created_at))}</p><p>${c.last_displayed?'最近显示 '+escapeHTML(formatTime(c.last_displayed)):'已保存 · 尚未显示'}</p></div><div class="content-actions"><button class="text-button" data-display="${c.id}">显示 ↗</button><button class="text-button" data-schedule="${c.id}">排程</button><button class="text-button danger" data-delete="${c.id}">删除</button></div></article>`).join(''):'<div class="empty-state">这里还没有内容<br><a href="#image" class="text-link">上传第一张照片 ↗</a></div>';
-  syncDisplayControls();
+  $('library-rows').innerHTML=filtered.map(c=>`<tr data-content-id="${c.id}"><td class="library-check"><input type="checkbox" data-select-content="${c.id}" aria-label="选择 ${escapeHTML(c.title)}"></td><td><div class="library-content"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"><div class="library-details"><strong>${escapeHTML(c.title)}</strong><small>${c.kind==='text'?'文本':'图片'}</small><small class="library-mobile-date">创建 ${escapeHTML(formatTime(c.created_at))}<br>${c.last_displayed?'最近显示 '+escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</small></div></div></td><td class="library-date">${escapeHTML(formatTime(c.created_at))}</td><td class="library-date">${c.last_displayed?escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</td><td class="library-row-actions"><button class="text-button" data-display="${c.id}">显示 ↗</button><button class="text-button" data-schedule="${c.id}">排程</button></td></tr>`).join('');
+  $('library-list').hidden=!filtered.length;$('library-empty').hidden=Boolean(filtered.length);
+  $('library-empty').innerHTML=contents.length?'没有符合条件的内容':'这里还没有内容<br><a href="#image" class="text-link">上传第一张照片 ↗</a>';
+  syncLibrarySelection();syncDisplayControls();
 }
 $('library-search').addEventListener('input',renderLibrary);$('library-filter').addEventListener('change',renderLibrary);
-$('library-grid').addEventListener('click',async e=>{
+$('library-rows').addEventListener('change',e=>{
+  const box=e.target.closest('[data-select-content]');if(!box || libraryDeleting)return;
+  if(box.checked)selectedContents.add(box.dataset.selectContent);else selectedContents.delete(box.dataset.selectContent);
+  syncLibrarySelection();
+});
+$('library-select-all').addEventListener('change',e=>{
+  for(const c of filteredContents())if(e.target.checked)selectedContents.add(c.id);else selectedContents.delete(c.id);
+  syncLibrarySelection();
+});
+$('library-rows').addEventListener('click',async e=>{
   const button=e.target.closest('button');if(!button)return;
   try{
     if(button.dataset.display)await displayContent(button.dataset.display);
     if(button.dataset.schedule)await openSchedule(null,button.dataset.schedule);
-    if(button.dataset.delete && confirm('删除这份内容？当前物理画面不会被清除。引用它的排程需先删除。')){await api('/api/contents/'+button.dataset.delete,{method:'DELETE'});await refreshContents();toast('内容已删除');}
   }catch(err){toast(err.message,true);}
+});
+$('library-delete').addEventListener('click',()=>{
+  if(libraryDeleting)return;
+  deleteTargets=filteredContents().filter(c=>selectedContents.has(c.id));
+  if(!deleteTargets.length)return;
+  $('delete-message').textContent=`确认删除选中的 ${deleteTargets.length} 份内容？删除后无法恢复。`;
+  $('delete-names').innerHTML=deleteTargets.map(c=>`<li>${escapeHTML(c.title)}</li>`).join('');
+  $('delete-error').textContent='';$('delete-dialog').showModal();
+});
+for(const id of ['close-delete','cancel-delete'])$(id).addEventListener('click',()=>{if(!libraryDeleting)$('delete-dialog').close();});
+$('delete-dialog').addEventListener('cancel',e=>{if(libraryDeleting)e.preventDefault();});
+$('confirm-delete').addEventListener('click',async()=>{
+  if(libraryDeleting || !deleteTargets.length)return;
+  const ids=deleteTargets.map(c=>c.id);libraryDeleting=true;syncLibrarySelection();
+  try{
+    const result=await api('/api/contents/delete',{method:'POST',...json({content_ids:ids})});
+    for(const id of result.deleted_ids)selectedContents.delete(id);
+    for(const type of ['image','text'])if(result.deleted_ids.includes(previews[type]?.id))invalidate(type);
+    $('delete-dialog').close();deleteTargets=[];
+    await refreshContents();toast(`已删除 ${result.deleted_ids.length} 份内容`);
+  }catch(e){$('delete-error').textContent=e.message;}
+  finally{libraryDeleting=false;syncLibrarySelection();}
 });
 function invalidate(type){versions[type]++;previews[type]=null;syncDisplayControls();}
 let selectedFile=null;

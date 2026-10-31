@@ -433,3 +433,69 @@ def test_auth_enabled_with_environment_password(tmp_path, monkeypatch, driver):
             assert client.get(path, auth=('admin', 'wrong')).status_code == 401
             assert client.get(path, auth=('admin', 'test-password')).status_code == 200
         assert client.get('/api/health', headers={'Authorization': 'Basic !!!'}).status_code == 401
+
+
+def test_batch_delete_removes_selected_contents_and_images(client):
+    first, second, retained = upload(client, 'one'), upload(client, 'two'), upload(client, 'three')
+    ids = [first['id'], second['id']]
+    response = client.post('/api/contents/delete', json={'content_ids': ids + [ids[0]]})
+    assert response.status_code == 200 and response.json()['deleted_ids'] == ids
+    assert [c['id'] for c in client.get('/api/contents').json()] == [retained['id']]
+    for content_id in ids:
+        assert client.get(f'/api/contents/{content_id}/image').status_code == 404
+        assert not client.app.state.store.image_path(content_id).exists()
+
+
+@pytest.mark.parametrize('blocker', ['schedule', 'pending', 'running', 'missing'])
+def test_batch_delete_is_atomic_when_any_content_cannot_be_deleted(client, blocker):
+    first, second = upload(client, 'unblocked'), upload(client, 'blocked')
+    ids = [first['id'], second['id']]
+    if blocker == 'schedule':
+        response = client.post('/api/schedules', json={'title':'keep','content_id':second['id'],'kind':'cron','cron':'0 8 * * *','enabled':False})
+        assert response.status_code == 201
+    elif blocker in ('pending', 'running'):
+        # Keep a durable in-flight job without racing the real worker.
+        client.app.state.engine.stop()
+        with client.app.state.store.connection() as db:
+            db.execute('INSERT INTO jobs(id,content_id,title,status,created_at) VALUES(?,?,?,?,?)', ('blocking',second['id'],'blocked',blocker,now_ts()))
+    else:
+        ids.append('missing')
+    response = client.post('/api/contents/delete', json={'content_ids':ids})
+    assert response.status_code == (404 if blocker == 'missing' else 409)
+    assert '未删除任何内容' in response.json()['detail']
+    assert {c['id'] for c in client.get('/api/contents').json()} == {first['id'],second['id']}
+    assert all(client.app.state.store.image_path(c['id']).exists() for c in (first,second))
+
+
+@pytest.mark.parametrize('payload', [{}, {'content_ids':[]}, {'content_ids':['']}, {'content_ids':['x'*65]}])
+def test_batch_delete_rejects_invalid_selection(client, payload):
+    assert client.post('/api/contents/delete', json=payload).status_code == 422
+
+
+def test_batch_delete_preserves_current_screen_and_requires_auth(settings):
+    settings.password = 'test-password'
+    with TestClient(create_app(settings)) as client:
+        assert client.post('/api/contents/delete',json={'content_ids':['x']}).status_code == 401
+        client.auth = ('admin','test-password')
+        item = upload(client)
+        job = client.post(f"/api/contents/{item['id']}/display").json()['job_id']
+        assert wait_job(client,job)['status'] == 'done'
+        screen = client.get('/api/screen').content
+        assert client.post('/api/contents/delete',json={'content_ids':[item['id']]}).status_code == 200
+        assert client.get('/api/screen').content == screen
+
+
+def test_batch_delete_handles_large_selection_in_one_transaction(client):
+    from app.store import new_id
+    ids = [new_id() for _ in range(1001)]
+    with client.app.state.store.connection() as db:
+        db.executemany('INSERT INTO contents(id,title,kind,created_at,payload) VALUES(?,?,?,?,?)', [(i,'bulk','image',now_ts(),'{}') for i in ids])
+        db.execute("INSERT INTO schedules VALUES('keep','keep',?,'once',0,NULL,0,NULL,0)", (ids[-1],))
+    # A protected item in the final SQL chunk must preserve the earlier chunks too.
+    response = client.post('/api/contents/delete', json={'content_ids':ids})
+    assert response.status_code == 409
+    assert len(client.get('/api/contents').json()) == len(ids)
+    assert client.delete('/api/schedules/keep').status_code == 200
+    response = client.post('/api/contents/delete', json={'content_ids':ids})
+    assert response.status_code == 200 and response.json()['deleted_ids'] == ids
+    assert client.get('/api/contents').json() == []

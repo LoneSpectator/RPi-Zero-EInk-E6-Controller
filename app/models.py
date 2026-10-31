@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Annotated, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 
@@ -44,3 +44,7 @@ class ScheduleInput(StrictModel):
     run_at: datetime | None = None
     cron: str | None = Field(default=None, max_length=120)
     enabled: bool = True
+
+
+class ContentsDelete(StrictModel):
+    content_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(min_length=1)
