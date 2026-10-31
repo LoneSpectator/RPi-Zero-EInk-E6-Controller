@@ -21,9 +21,9 @@
  <section id="page-overview" class="page">
   <div id="mode-note" class="notice"></div>
   <div class="stats-grid">
-   <article class="card stat"><div class="stat-label">系统时间 <span>◷</span></div><div id="clock" class="stat-value mono">--:--:--</div><div id="clock-date" class="muted">读取系统时间</div></article>
-   <article class="card stat"><div class="stat-label">电池电量 <span>▱</span></div><div id="battery" class="stat-value">—<small> %</small></div><div id="battery-note" class="muted">等待遥测</div></article>
-   <article class="card stat"><div class="stat-label">屏幕状态 <span>◫</span></div><div id="screen-state" class="stat-value status-value">未知</div><div id="queue-note" class="muted">尚未刷新</div></article>
+   <article class="card stat stat-clock"><div class="stat-label">系统时间 <span>◷</span></div><div class="stat-readings"><time id="clock-date" class="stat-value">----/--/--</time><time id="clock" class="stat-value">--:--:--</time></div><div id="clock-zone" class="muted">读取系统时间</div></article>
+   <article class="card stat"><div class="stat-label">电池电量 <span>▱</span></div><div class="stat-readings"><span id="battery" class="stat-value">—%</span><span id="battery-voltage" class="stat-value">— V</span></div><div id="battery-note" class="muted">等待遥测</div></article>
+   <article class="card stat"><div class="stat-label">屏幕状态 <span>◫</span></div><div id="screen-state" class="stat-value">未知</div><div id="queue-note" class="muted">尚未刷新</div></article>
   </div>
   <div class="overview-grid">
    <article class="card screen-card"><div class="card-heading"><h2>当前画面</h2><span class="tag">800 × 480</span></div><div class="screen-mat"><div class="frame"><img id="current-screen" alt="最后成功下发的画面" hidden><div id="screen-empty" class="screen-placeholder"><span>◫</span><h3>给生活留一帧</h3><p>上传图片或写下一段文字<br>让墨水屏显示你的第一份内容</p></div></div></div><div class="screen-caption"><div><strong id="current-title">还没有显示内容</strong><small id="last-refresh">等待第一次刷新</small></div><span class="muted">最后成功下发画面</span></div><div id="screen-error" class="error-text" role="status"></div></article>

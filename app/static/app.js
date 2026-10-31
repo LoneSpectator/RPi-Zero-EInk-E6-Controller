@@ -58,7 +58,10 @@ function clock() {
   if(!state)return;
   const date=new Date(Date.now()+clockOffset);
   $('clock').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date);
-  $('clock-date').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,year:'numeric',month:'long',day:'numeric',weekday:'long'}).format(date)+' · '+state.timezone;
+  const calendar=new Intl.DateTimeFormat('sv-SE',{timeZone:state.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(date);
+  $('clock-date').textContent=calendar; $('clock-date').dateTime=calendar;
+  $('clock').dateTime=date.toISOString();
+  $('clock-zone').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,weekday:'long'}).format(date)+' · '+state.timezone;
 }
 async function refreshStatus() {
   const request=++statusRequest;
@@ -68,8 +71,9 @@ async function refreshStatus() {
     state=next; statusAvailable=true; displayAwaitingStatus=false; syncDisplayControls(); clockOffset=new Date(state.now).getTime()-Date.now(); clock();
     $('connection').textContent=state.driver==='mock'?'模拟设备已连接':'设备服务已连接';
     $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。'+(!state.auth_enabled?' 当前未启用登录，请仅在可信本地环境使用。':''):'';
-    $('battery').innerHTML=state.battery.available?`${state.battery.percent}<small> %</small>`:'—<small> %</small>';
-    $('battery-note').textContent=state.battery.available?`${state.battery.voltage.toFixed(3)} V · 电压估算`:state.battery.message;
+    $('battery').textContent=state.battery.available?`${state.battery.percent}%`:'—%';
+    $('battery-voltage').textContent=state.battery.available?`${state.battery.voltage.toFixed(3)} V`:'— V';
+    $('battery-note').textContent=state.battery.available?'电压估算':state.battery.message;
     $('screen-state').textContent=labels[state.screen.status]||state.screen.status;
     $('queue-note').textContent=state.running?`正在刷新：${state.running.title}`:state.pending?`${state.pending} 项内容等待刷新`:'队列空闲 · '+(state.driver==='mock'?'模拟模式':'六色电子纸');
     $('screen-error').textContent=state.screen.error||'';
