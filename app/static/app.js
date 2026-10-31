@@ -70,7 +70,7 @@ async function refreshStatus() {
     if(request!==statusRequest)return;
     state=next; statusAvailable=true; displayAwaitingStatus=false; syncDisplayControls(); clockOffset=new Date(state.now).getTime()-Date.now(); clock();
     $('connection').textContent=state.driver==='mock'?'模拟设备已连接':'设备服务已连接';
-    $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。'+(!state.auth_enabled?' 当前未启用登录，请仅在可信本地环境使用。':''):'';
+    $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。':'';
     $('battery').textContent=state.battery.available?`${state.battery.percent}%`:'—%';
     $('battery-voltage').textContent=state.battery.available?`${state.battery.voltage.toFixed(3)} V`:'— V';
     $('battery-note').textContent=state.battery.available?'电压估算':state.battery.message;

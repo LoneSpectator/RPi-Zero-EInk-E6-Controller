@@ -8,7 +8,7 @@ services:
             DISPLAY_DRIVER: waveshare
             TZ: ${TZ:-Asia/Shanghai}
             WEB_USERNAME: ${WEB_USERNAME:-admin}
-            WEB_PASSWORD: ${WEB_PASSWORD:?Set WEB_PASSWORD in .env before startup}
+            WEB_PASSWORD: ${WEB_PASSWORD:-}
             INA219_ADDRESS: ${INA219_ADDRESS:-0x43}
             I2C_BUS: "1"
             GPIO_CHIP: "0"

@@ -395,3 +395,41 @@ def test_concurrent_manual_requests_accept_exactly_one(settings):
             assert len(app.state.store.rows('SELECT * FROM jobs')) == 1
         finally:
             display.release.set()
+
+
+@pytest.mark.parametrize('driver', ['mock', 'waveshare'])
+@pytest.mark.parametrize('password', [None, ''], ids=['unset', 'empty'])
+def test_auth_disabled_without_environment_password(tmp_path, monkeypatch, driver, password):
+    monkeypatch.setenv('DISPLAY_DRIVER', driver)
+    monkeypatch.setenv('WEB_USERNAME', 'admin')
+    monkeypatch.delenv('WEB_PASSWORD', raising=False)
+    if password is not None:
+        monkeypatch.setenv('WEB_PASSWORD', password)
+    settings = Settings(data_dir=tmp_path)
+    assert settings.password == ''
+    with TestClient(create_app(settings)) as client:
+        for path in ['/', '/api/health', '/api/contents']:
+            response = client.get(path)
+            assert response.status_code == 200
+            assert 'www-authenticate' not in response.headers
+        # Ignore cached or malformed Authorization headers when auth is disabled.
+        for header in ['Basic !!!', 'Basic bm8tY29sb24=', 'Bearer unused']:
+            assert client.get('/api/health', headers={'Authorization': header}).status_code == 200
+        item = upload(client)
+        assert client.delete('/api/contents/' + item['id']).status_code == 200
+
+
+@pytest.mark.parametrize('driver', ['mock', 'waveshare'])
+def test_auth_enabled_with_environment_password(tmp_path, monkeypatch, driver):
+    monkeypatch.setenv('DISPLAY_DRIVER', driver)
+    monkeypatch.setenv('WEB_USERNAME', 'admin')
+    monkeypatch.setenv('WEB_PASSWORD', 'test-password')
+    settings = Settings(data_dir=tmp_path)
+    with TestClient(create_app(settings)) as client:
+        for path in ['/', '/api/health', '/api/contents']:
+            response = client.get(path)
+            assert response.status_code == 401
+            assert response.headers['www-authenticate'].startswith('Basic ')
+            assert client.get(path, auth=('admin', 'wrong')).status_code == 401
+            assert client.get(path, auth=('admin', 'test-password')).status_code == 200
+        assert client.get('/api/health', headers={'Authorization': 'Basic !!!'}).status_code == 401

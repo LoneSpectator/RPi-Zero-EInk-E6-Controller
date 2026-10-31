@@ -18,5 +18,3 @@ class Settings:
         ZoneInfo(self.timezone)
         if self.driver not in ('mock', 'waveshare'):
             raise ValueError('DISPLAY_DRIVER must be mock or waveshare')
-        if self.driver == 'waveshare' and not self.password:
-            raise ValueError('真机模式必须设置 WEB_PASSWORD')

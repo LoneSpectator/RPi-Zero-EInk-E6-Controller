@@ -30,7 +30,7 @@ cd RPi-Zero-EInk-E6-Controller
 cp .env.example .env
 ```
 
-编辑 `.env`，设置非空 `WEB_PASSWORD`；需要从局域网电脑访问时，设置 `BIND_ADDRESS=0.0.0.0`。默认镜像为 `ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest`，可修改 `IMAGE` 固定到已发布的版本标签或 `sha-<完整提交 SHA>`。
+按需编辑 `.env`：`WEB_PASSWORD` 未设置或为空时关闭认证，可直接访问控制台和 API；设置非空密码后启用 Basic 登录。需要从局域网电脑访问时，设置 `BIND_ADDRESS=0.0.0.0`。默认镜像为 `ghcr.io/lonespectator/rpi-zero-eink-e6-controller:latest`，可修改 `IMAGE` 固定到已发布的版本标签或 `sha-<完整提交 SHA>`。
 
 拉取镜像并启动真机服务：
 
@@ -40,7 +40,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-浏览器访问树莓派的 **8000 端口**，使用 `.env` 中的用户和密码登录（默认用户 `admin`）。默认只绑定 `127.0.0.1`；设置 `BIND_ADDRESS=0.0.0.0` 后才允许局域网访问。跨不可信网络访问时，在前面部署 HTTPS 反向代理。
+浏览器访问树莓派的 **8000 端口**。未设置密码时直接进入控制台；设置密码后，使用 `.env` 中的用户和密码登录（默认用户 `admin`）。默认只绑定 `127.0.0.1`；设置 `BIND_ADDRESS=0.0.0.0` 后才允许局域网访问。跨不可信网络访问时，在前面部署 HTTPS 反向代理。
 
 硬件配置映射三个设备，不需要 `privileged: true`。容器默认 root，用于打开已映射的设备和写入数据目录。若改为普通用户运行，需自行配置设备组权限和数据目录权限。GPIO 采用 `lgpio`，无需在容器中伪造树莓派型号探测信息。
 
@@ -129,7 +129,7 @@ docker compose start
 | `DISPLAY_DRIVER` | `waveshare` | 部署配置使用真机驱动；本地调试可设为 `mock` |
 | `DATA_DIR` | `/data` | 数据目录 |
 | `TZ` | `Asia/Shanghai` | IANA 时区 |
-| `WEB_USERNAME` / `WEB_PASSWORD` | `admin` / 空 | Basic 登录凭据，不写入源码 |
+| `WEB_USERNAME` / `WEB_PASSWORD` | `admin` / 空 | 密码未设置或为空时关闭认证；非空时启用 Basic 登录 |
 | `GPIO_CHIP` | `0` | GPIO 芯片编号；更改时同时更改 devices 映射 |
 | `I2C_BUS` / `INA219_ADDRESS` | `1` / `0x43` | 电池传感器配置 |
 | `EPD_BUSY_TIMEOUT` | `180` | 单阶段 BUSY 超时秒数，总硬件操作另有 240 秒上限 |

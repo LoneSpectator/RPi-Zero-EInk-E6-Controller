@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, Response, JSONResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPBasic
 from fastapi.staticfiles import StaticFiles
 
 from .limits import RequestSizeLimit
@@ -51,9 +51,10 @@ def create_app(settings=None, display=None):
     app.add_middleware(RequestSizeLimit)
     app.state.settings = settings
 
-    def auth(credentials: HTTPBasicCredentials | None = Depends(basic)):
+    async def auth(request: Request):
         if not settings.password:
             return
+        credentials = await basic(request)
         if credentials and secrets.compare_digest(credentials.username.encode(), settings.username.encode()) and secrets.compare_digest(credentials.password.encode(), settings.password.encode()):
             return
         raise HTTPException(401, '需要登录', headers={'WWW-Authenticate': 'Basic realm="PhotoPainter", charset="UTF-8"'})
