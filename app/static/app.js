@@ -65,13 +65,33 @@ function clock() {
   $('clock').dateTime=date.toISOString();
   $('clock-zone').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,weekday:'long'}).format(date)+' · '+state.timezone;
 }
+function updateHeaderStatus(){
+  const set=(id,text,kind='',title='')=>{
+    const el=$(id);
+    if(el.textContent!==text)el.textContent=text;
+    el.className='connection'+(kind?' '+kind:'');el.title=title;
+  };
+  if(!statusAvailable || !state){
+    set('connection','连接异常','status-error');
+    set('header-screen','屏幕状态未知','status-unknown');
+    set('header-battery','电量 —%','status-unknown','连接异常，无法获取电量');
+    return;
+  }
+  set('connection',state.driver==='mock'?'模拟设备已连接':'设备服务已连接');
+  const screen=state.running || state.screen.status==='refreshing'?'refreshing':state.pending?'pending':state.screen.status;
+  const text={refreshing:'屏幕刷新中',pending:'屏幕等待刷新',idle:'屏幕待机',error:'屏幕刷新失败',unknown:'屏幕状态待确认'};
+  const kind=screen==='error'?'status-error':screen==='refreshing'||screen==='pending'?'status-active':screen==='idle'?'':'status-unknown';
+  set('header-screen',text[screen]||'屏幕状态未知',kind,state.screen.error||'');
+  const battery=state.battery.available && Number.isFinite(state.battery.percent);
+  set('header-battery',battery?`电量 ${state.battery.percent}%`:'电量 —%',battery?'':'status-unknown',state.battery.message||'');
+}
 async function refreshStatus() {
   const request=++statusRequest;
   try {
     const next=await api('/api/status');
     if(request!==statusRequest)return;
     state=next; statusAvailable=true; displayAwaitingStatus=false; syncDisplayControls(); clockOffset=new Date(state.now).getTime()-Date.now(); clock();
-    $('connection').textContent=state.driver==='mock'?'模拟设备已连接':'设备服务已连接';
+    updateHeaderStatus();
     $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。':'';
     $('battery').textContent=state.battery.available?`${state.battery.percent}%`:'—%';
     $('battery-voltage').textContent=state.battery.available?`${state.battery.voltage.toFixed(3)} V`:'— V';
@@ -87,7 +107,7 @@ async function refreshStatus() {
     $('upcoming').innerHTML=state.upcoming.length?state.upcoming.map(s=>`<div class="upcoming-item"><div class="schedule-time">${escapeHTML(formatTime(s.next_run,{month:undefined,day:undefined}))}<small>${escapeHTML(formatTime(s.next_run,{hour:undefined,minute:undefined}))}</small></div><div><strong>${escapeHTML(s.content_title)}</strong><p>${escapeHTML(s.title)} · ${s.kind==='cron'?'循环':'单次'}</p></div></div>`).join(''):'<div class="empty-state">把下一帧交给时间<br><a class="text-link" href="#schedule">创建你的第一个排程 ↗</a></div>';
     $('job-history').innerHTML=state.jobs.length?state.jobs.map(j=>`<div class="history-row"><span>${escapeHTML(j.title)}${j.error?`<small class="error-text"> ${escapeHTML(j.error)}</small>`:''}</span><span class="muted">${j.scheduled_for?'定时':'手动'}</span><time class="muted">${escapeHTML(formatTime(j.created_at))}</time><span class="job-state ${j.status==='failed'?'failed':''}">${escapeHTML(labels[j.status])}</span></div>`).join(''):'<div class="empty-state">还没有刷新记录</div>';
     $('schedule-tz').textContent=state.timezone;
-  } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); $('connection').textContent='连接异常'; if(!state)toast(e.message,true);}
+  } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); updateHeaderStatus(); if(!state)toast(e.message,true);}
 }
 async function refreshContents(){contents=await api('/api/contents');$('library-count').textContent=contents.length;renderLibrary();}
 function filteredContents(){
