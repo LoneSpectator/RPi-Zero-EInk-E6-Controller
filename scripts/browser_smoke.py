@@ -16,7 +16,7 @@ with sync_playwright() as p:
     page.on('pageerror', lambda e: errors.append(str(e)))
     page.goto(url)
     expect(page.locator('#connection')).to_have_text('模拟设备已连接')
-    expect(page.locator('#screen-state')).to_be_visible()
+    expect(page.locator('#header-screen')).to_be_visible()
     page.screenshot(path=str(artifacts/'overview-empty.png'),full_page=True)
     page.locator('nav a[data-page="image"]').click()
     out=BytesIO();Image.new('RGB',(600,300),'blue').save(out,'PNG')

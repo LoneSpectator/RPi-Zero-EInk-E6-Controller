@@ -64,7 +64,7 @@ with TemporaryDirectory(prefix='photopainter-refresh-') as directory:
             assert display.started.wait(2)
             expect(page.locator('#refresh-notice')).to_contain_text('屏幕正在刷新')
             expect(page.locator('#header-screen')).to_have_text('屏幕刷新中')
-            expect(page.locator('#header-battery')).to_have_text('电量 —%')
+            expect(page.locator('#header-battery')).to_have_text('—%')
 
             # Re-rendering the library or regenerating either preview must not unlock display.
             page.locator('nav a[data-page="library"]').click()
@@ -97,7 +97,9 @@ with TemporaryDirectory(prefix='photopainter-refresh-') as directory:
             page.evaluate('refreshStatus()')
             expect(page.locator('#text-display')).to_be_disabled()
             expect(page.locator('#header-screen')).to_have_text('屏幕状态未知')
-            expect(page.locator('#header-battery')).to_have_text('电量 —%')
+            expect(page.locator('#connection')).to_have_class('connection status-error')
+            assert page.locator('#connection').evaluate('(el)=>getComputedStyle(el).color') == 'rgb(198, 40, 40)'
+            expect(page.locator('#header-battery')).to_have_text('—%')
             expect(page.locator('#text-save')).to_be_enabled()
             page.unroute('**/api/status')
             page.evaluate('refreshStatus()')
@@ -110,7 +112,6 @@ with TemporaryDirectory(prefix='photopainter-refresh-') as directory:
             display.release.set()
             expect(page.locator('#text-display')).to_be_enabled()
             page.locator('nav a[data-page="overview"]').click()
-            expect(page.locator('#screen-state')).to_have_text('刷新失败')
             expect(page.locator('#header-screen')).to_have_text('屏幕刷新失败')
             assert not errors, errors
             browser.close()

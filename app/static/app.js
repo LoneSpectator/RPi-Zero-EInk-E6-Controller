@@ -1,7 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let state = null, contents = [], schedules = [], clockOffset = 0, lastSnapshot = null;
+let state = null, contents = [], schedules = [], lastSnapshot = null;
+let serverTimeBase = null, serverTimeReceivedAt = 0;
 let toastTimer;
 const selectedContents = new Set();
 let libraryDeleting = false, deleteTargets = [];
@@ -56,14 +57,45 @@ function page() {
   if(key==='schedule')refreshSchedules().catch(e=>toast(e.message,true));
 }
 window.addEventListener('hashchange',page);
+function serverNow(){
+  return serverTimeBase===null?null:serverTimeBase+(performance.now()-serverTimeReceivedAt);
+}
 function clock() {
-  if(!state)return;
-  const date=new Date(Date.now()+clockOffset);
+  if(!statusAvailable || serverTimeBase===null){
+    $('clock-date').textContent='----/--/--';$('clock').textContent='--:--:--';
+    $('clock-date').removeAttribute('datetime');$('clock').removeAttribute('datetime');
+    $('header-clock').classList.add('status-unknown');$('header-clock').title='服务器时间不可用';
+    return;
+  }
+  const date=new Date(serverNow());
   $('clock').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(date);
   const calendar=new Intl.DateTimeFormat('sv-SE',{timeZone:state.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(date);
   $('clock-date').textContent=calendar; $('clock-date').dateTime=calendar;
   $('clock').dateTime=date.toISOString();
-  $('clock-zone').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,weekday:'long'}).format(date)+' · '+state.timezone;
+  $('header-clock').classList.remove('status-unknown');
+  $('header-clock').title='服务器时间 · '+new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,weekday:'long'}).format(date)+' · '+state.timezone;
+}
+function updateHeaderBattery(percent=null,voltage=null,message=''){
+  const gauge=$('header-battery-gauge'), level=$('header-battery-level'), known=Number.isFinite(percent);
+  const value=known?Math.round(Math.min(100,Math.max(0,percent))):null;
+  const text=known?`${value}%`:'—%';
+  if($('header-battery').textContent!==text)$('header-battery').textContent=text;
+  gauge.classList.toggle('status-unknown',!known);
+  gauge.setAttribute('role',known?'meter':'img');
+  gauge.setAttribute('aria-label',known?'电池电量':'电量未知');
+  if(known){
+    gauge.setAttribute('aria-valuenow',String(value));gauge.setAttribute('aria-valuemin','0');gauge.setAttribute('aria-valuemax','100');
+    gauge.setAttribute('aria-valuetext',`电量 ${value}%`);
+  }else{
+    for(const name of ['aria-valuenow','aria-valuemin','aria-valuemax','aria-valuetext'])gauge.removeAttribute(name);
+  }
+  const details=[];
+  if(known)details.push(`电量 ${value}%`);
+  if(Number.isFinite(voltage))details.push(`电压 ${voltage.toFixed(3)} V`);
+  if(message)details.push(message);
+  gauge.title=details.join(' · ')||'电量未知';
+  level.style.strokeDashoffset=String(known?100-value:100);
+  level.style.opacity=known && value>0?'1':'0';
 }
 function updateHeaderStatus(){
   const set=(id,text,kind='',title='')=>{
@@ -74,30 +106,29 @@ function updateHeaderStatus(){
   if(!statusAvailable || !state){
     set('connection','连接异常','status-error');
     set('header-screen','屏幕状态未知','status-unknown');
-    set('header-battery','电量 —%','status-unknown','连接异常，无法获取电量');
+    updateHeaderBattery(null,null,'连接异常，无法获取电量');clock();
     return;
   }
   set('connection',state.driver==='mock'?'模拟设备已连接':'设备服务已连接');
   const screen=state.running || state.screen.status==='refreshing'?'refreshing':state.pending?'pending':state.screen.status;
   const text={refreshing:'屏幕刷新中',pending:'屏幕等待刷新',idle:'屏幕待机',error:'屏幕刷新失败',unknown:'屏幕状态待确认'};
   const kind=screen==='error'?'status-error':screen==='refreshing'||screen==='pending'?'status-active':screen==='idle'?'':'status-unknown';
-  set('header-screen',text[screen]||'屏幕状态未知',kind,state.screen.error||'');
+  const detail=state.screen.error||(state.running?`正在刷新：${state.running.title}`:state.pending?`${state.pending} 项内容等待刷新`:'刷新队列空闲');
+  set('header-screen',text[screen]||'屏幕状态未知',kind,detail);
   const battery=state.battery.available && Number.isFinite(state.battery.percent);
-  set('header-battery',battery?`电量 ${state.battery.percent}%`:'电量 —%',battery?'':'status-unknown',state.battery.message||'');
+  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'');
 }
 async function refreshStatus() {
   const request=++statusRequest;
   try {
-    const next=await api('/api/status');
+    const next=await api('/api/status',{signal:AbortSignal.timeout(8000)});
     if(request!==statusRequest)return;
-    state=next; statusAvailable=true; displayAwaitingStatus=false; syncDisplayControls(); clockOffset=new Date(state.now).getTime()-Date.now(); clock();
+    const serverTime=Date.parse(next.now);
+    if(!Number.isFinite(serverTime))throw new Error('服务器时间不可用');
+    state=next;serverTimeBase=serverTime;serverTimeReceivedAt=performance.now();
+    statusAvailable=true;displayAwaitingStatus=false;syncDisplayControls();clock();
     updateHeaderStatus();
     $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。':'';
-    $('battery').textContent=state.battery.available?`${state.battery.percent}%`:'—%';
-    $('battery-voltage').textContent=state.battery.available?`${state.battery.voltage.toFixed(3)} V`:'— V';
-    $('battery-note').textContent=state.battery.available?'电压估算':state.battery.message;
-    $('screen-state').textContent=labels[state.screen.status]||state.screen.status;
-    $('queue-note').textContent=state.running?`正在刷新：${state.running.title}`:state.pending?`${state.pending} 项内容等待刷新`:'队列空闲 · '+(state.driver==='mock'?'模拟模式':'六色电子纸');
     $('screen-error').textContent=state.screen.error||'';
     $('current-title').textContent=state.screen.title||'还没有显示内容';
     $('last-refresh').textContent=state.screen.updated_at?'成功下发于 '+formatTime(state.screen.updated_at):'等待第一次刷新';
@@ -308,7 +339,8 @@ async function openSchedule(existing=null,contentId=null){
   $('schedule-id').value=existing?.id||'';$('schedule-dialog-title').textContent=existing?'编辑排程':'新建排程';
   $('schedule-title').value=existing?.title||'';$('schedule-content').value=existing?.content_id||contentId||contents[0].id;
   $('schedule-kind').value=existing?.kind||'cron';$('schedule-cron').value=existing?.cron||'*/30 * * * *';
-  $('schedule-once').value=localDatetime(existing?.run_at||Math.ceil((Date.now()+clockOffset+60000)/60000)*60);
+  if(serverTimeBase===null){await refreshStatus();if(serverTimeBase===null)throw new Error('无法获取服务器时间，请稍后重试');}
+  $('schedule-once').value=localDatetime(existing?.run_at||Math.ceil((serverNow()+60000)/60000)*60);
   $('schedule-enabled').checked=existing?Boolean(existing.enabled):true;scheduleKind();$('schedule-dialog').showModal();
 }
 $('new-schedule').addEventListener('click',()=>openSchedule().catch(e=>toast(e.message,true)));
