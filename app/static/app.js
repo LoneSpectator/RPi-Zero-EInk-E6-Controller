@@ -360,7 +360,7 @@ function zonedISO(value){
   }
   throw new Error('此本地时间在设备时区中不存在，请选择其他时间');
 }
-function scheduleKind(){const once=$('schedule-kind').value==='once';$('once-field').hidden=!once;$('cron-field').hidden=once;}
+function scheduleKind(){const once=document.querySelector('[name="schedule-kind"]:checked').value==='once';$('once-field').hidden=!once;$('cron-field').hidden=once;}
 $('schedule-kind').addEventListener('change',scheduleKind);
 async function openSchedule(existing=null,contentId=null){
   await refreshContents();if(!contents.length)throw new Error('请先在图片或文本页面保存一份内容');
@@ -368,7 +368,7 @@ async function openSchedule(existing=null,contentId=null){
   $('schedule-content').innerHTML=contents.map(c=>`<option value="${c.id}">${escapeHTML(c.title)}</option>`).join('');
   $('schedule-id').value=existing?.id||'';$('schedule-dialog-title').textContent=existing?'编辑排程':'新建排程';
   $('schedule-title').value=existing?.title||'';$('schedule-content').value=existing?.content_id||contentId||contents[0].id;
-  $('schedule-kind').value=existing?.kind||'cron';$('schedule-cron').value=existing?.cron||'*/30 * * * *';
+  document.querySelector(`[name="schedule-kind"][value="${existing?.kind||'cron'}"]`).checked=true;$('schedule-cron').value=existing?.cron||'*/30 * * * *';
   if(serverTimeBase===null){await refreshStatus();if(serverTimeBase===null)throw new Error('无法获取服务器时间，请稍后重试');}
   $('schedule-once').value=localDatetime(existing?.run_at||Math.ceil((serverNow()+60000)/60000)*60);
   $('schedule-enabled').checked=existing?Boolean(existing.enabled):true;scheduleKind();$('schedule-dialog').showModal();
@@ -378,7 +378,7 @@ $('new-schedule').addEventListener('click',()=>openSchedule().catch(e=>toast(e.m
 $('schedule-form').addEventListener('submit',async e=>{
   e.preventDefault();const submit=e.submitter;submit.disabled=true;
   try{
-    const kind=$('schedule-kind').value;
+    const kind=document.querySelector('[name="schedule-kind"]:checked').value;
     const body={title:$('schedule-title').value,content_id:$('schedule-content').value,kind,enabled:$('schedule-enabled').checked,cron:kind==='cron'?$('schedule-cron').value:null,run_at:kind==='once'?zonedISO($('schedule-once').value):null};
     const id=$('schedule-id').value;await api('/api/schedules'+(id?'/'+id:''),{method:id?'PUT':'POST',...json(body)});
     $('schedule-dialog').close();toast('排程已保存');await refreshSchedules();await refreshStatus();

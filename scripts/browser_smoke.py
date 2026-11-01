@@ -69,7 +69,7 @@ with sync_playwright() as p:
     # Device timezone must win even when the browser is in New York.
     page.locator('#new-schedule').click()
     page.locator('#schedule-title').fill('单次的诗')
-    page.locator('#schedule-kind').select_option('once')
+    page.locator('[name="schedule-kind"][value="once"]').check()
     page.locator('#schedule-once').fill('2035-01-02T08:15')
     page.locator('#schedule-form button[type="submit"]').click()
     expect(page.locator('#schedule-dialog')).not_to_be_visible()
