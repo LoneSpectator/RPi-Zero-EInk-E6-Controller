@@ -10,6 +10,7 @@ services:
             WEB_USERNAME: ${WEB_USERNAME:-admin}
             WEB_PASSWORD: ${WEB_PASSWORD:-}
             INA219_ADDRESS: ${INA219_ADDRESS:-0x43}
+            INA219_CURRENT_POLARITY: ${INA219_CURRENT_POLARITY:--1}
             I2C_BUS: "1"
             GPIO_CHIP: "0"
         devices:

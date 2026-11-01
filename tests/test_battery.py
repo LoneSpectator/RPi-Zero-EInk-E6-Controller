@@ -1,4 +1,6 @@
 from io import BytesIO
+from dataclasses import asdict
+import json
 import sys
 from types import SimpleNamespace
 
@@ -6,7 +8,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
 
-from app.battery import BatteryMonitor, estimate_percent, FULL_SETTLE_SECONDS
+from app.battery import BatteryMonitor, Learning, estimate_percent, FULL_SETTLE_SECONDS, MODEL_VERSION
 from app.config import Settings
 from app.engine import Engine
 from app.hardware import battery_status
@@ -41,6 +43,7 @@ def monitor_for(tmp_path, samples):
 
 @pytest.mark.parametrize('current', [-1000, -1, 0, 1, 1000])
 def test_ina219_signed_shunt_current_and_terminal_voltage(monkeypatch, current):
+    monkeypatch.delenv('INA219_CURRENT_POLARITY', raising=False)
     class Bus:
         def __init__(self, index): assert index == 1
         def __enter__(self): return self
@@ -48,11 +51,72 @@ def test_ina219_signed_shunt_current_and_terminal_voltage(monkeypatch, current):
         def read_i2c_block_data(self, addr, reg, length):
             assert addr == 0x43 and length == 2
             return {0: [0x0e, 0xef], 1: list(current.to_bytes(2, 'big', signed=True)),
-                    2: [0x1c, 0xea]}[reg]  # 3.7 V on load side, conversion-ready bit set.
+                    2: [0x1c, 0xea]}[reg]  # 3.7 V at V-, conversion-ready bit set.
     monkeypatch.setitem(sys.modules, 'smbus2', SimpleNamespace(SMBus=Bus))
     result = battery_status('waveshare')
-    assert result['available'] and result['current_ma'] == current
-    assert result['voltage'] == round(3.7 + current * .00001, 3)
+    assert result['available'] and result['current_ma'] == -current
+    assert result['raw_current_ma'] == current and result['current_polarity'] == -1
+    assert result['voltage'] == 3.7
+
+
+@pytest.mark.parametrize('raw_current,state,charging', [
+    (-222, 'discharging', False),  # actual unplugged reading reported by the owner.
+    (766, 'charging', True),      # actual plugged-in reading reported by the owner.
+    (0, 'idle', False),
+])
+def test_real_board_polarity_through_sensor_and_monitor(tmp_path, monkeypatch, raw_current, state, charging):
+    monkeypatch.delenv('INA219_CURRENT_POLARITY', raising=False)
+    class Bus:
+        def __init__(self, index): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read_i2c_block_data(self, addr, reg, length):
+            return {0: [0x0e, 0xef], 1: list(raw_current.to_bytes(2, 'big', signed=True)),
+                    2: [0x1c, 0xea]}[reg]
+    monkeypatch.setitem(sys.modules, 'smbus2', SimpleNamespace(SMBus=Bus))
+    monitor = BatteryMonitor(Store(tmp_path), 'waveshare', battery_status)
+    result = monitor.status()
+    assert result['charge_state'] == state and result['charging'] is charging
+    assert result['raw_current_ma'] == raw_current
+    assert result['current_ma'] == -raw_current
+    assert result['voltage'] == 3.7
+
+
+@pytest.mark.parametrize('polarity', [-1, 1])
+def test_current_polarity_override(tmp_path, monkeypatch, polarity):
+    monkeypatch.setenv('INA219_CURRENT_POLARITY', str(polarity))
+    class Bus:
+        def __init__(self, index): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read_i2c_block_data(self, addr, reg, length):
+            return {0: [0x0e, 0xef], 1: [0, 200], 2: [0x1c, 0xea]}[reg]
+    monkeypatch.setitem(sys.modules, 'smbus2', SimpleNamespace(SMBus=Bus))
+    result = BatteryMonitor(Store(tmp_path), 'waveshare', battery_status).status()
+    assert result['current_ma'] == polarity * 200
+    assert result['charge_state'] == ('discharging' if polarity == 1 else 'charging')
+
+
+@pytest.mark.parametrize('legacy', [True, False], ids=['old-model', 'changed-polarity'])
+def test_wrong_direction_learning_is_reset_and_persisted(tmp_path, monkeypatch, legacy):
+    monkeypatch.delenv('INA219_CURRENT_POLARITY', raising=False)
+    store = Store(tmp_path)
+    saved = asdict(Learning(full_voltage=4.12, empty_voltage=3.12, resistance_ohm=.25,
+                            charge_seen=True, charge_peak_ma=766, taper_seen=True,
+                            full=True, depleted_voltage=3.1, full_calibrated_at=123, empty_calibrated_at=456))
+    if legacy:
+        saved.pop('model_version')
+        saved.pop('current_polarity')
+    else:
+        saved['current_polarity'] = 1
+    with store.connection() as db:
+        db.execute('INSERT INTO battery_learning VALUES(1,?)', (json.dumps(saved),))
+    samples = Samples()
+    monitor = BatteryMonitor(store, 'waveshare', samples.read)
+    assert monitor.learning == Learning()
+    persisted = json.loads(store.one('SELECT payload FROM battery_learning')['payload'])
+    assert persisted == asdict(Learning())
+    assert persisted['model_version'] == MODEL_VERSION and persisted['current_polarity'] == -1
 
 
 def test_voltage_retained_if_current_register_fails(monkeypatch):

@@ -13,4 +13,8 @@ vendor RaspberryPi configuration. UPS I²C address 0x43 and the 3.0–4.2 V
 single-cell operating range, 0.01 ohm shunt and 32-sample ADC configuration
 are from UPS/INA219.py at the same upstream commit. Current is read directly
 from signed shunt voltage (10 uV/LSB), without relying on the calibration
-register. The non-linear battery model and cycle learning are project code.
+register. Charging direction is determined by the board wiring, not by the
+upstream register sign: observed PhotoPainter raw current is negative on
+battery power and positive while charging. The adapter normalizes current
+to positive discharge / negative charge. Bus voltage is kept as measured.
+The non-linear battery model and cycle learning are project code.

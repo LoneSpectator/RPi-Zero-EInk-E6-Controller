@@ -1,6 +1,6 @@
 import os
 import time
-from .battery import estimate_percent
+from .battery import estimate_percent, current_polarity
 
 
 class MockDisplay:
@@ -41,6 +41,7 @@ def battery_status(driver):
                 'current_ma': None,
                 'message': '模拟模式，无电池遥测'}
     try:
+        polarity = current_polarity()
         from smbus2 import SMBus
         with SMBus(int(os.getenv('I2C_BUS', '1'))) as bus:
             # Product UPS example: 0x43; INA219 bus voltage register is big-endian.
@@ -54,6 +55,7 @@ def battery_status(driver):
             raw = bus.read_i2c_block_data(addr, 2, 2)
             voltage = ((raw[0] << 8 | raw[1]) >> 3) * .004
             current = None
+            raw_current = None
             current_error = ''
             try:
                 raw = bus.read_i2c_block_data(addr, 1, 2)
@@ -63,15 +65,18 @@ def battery_status(driver):
                 if abs(shunt) >= 8000:
                     raise ValueError('分流电压超出测量范围')
                 # 10 uV/LSB, official board 0.01 ohm shunt => 1 mA/LSB.
-                # Battery/source is V+; positive is discharge, negative charge.
-                current = float(shunt)
-                voltage += shunt * .00001
+                # Physical sign depends on board wiring. PhotoPainter readings
+                # are negative on battery power, positive while charging.
+                # The model consistently uses positive discharge / negative charge.
+                raw_current = float(shunt)
+                current = polarity * raw_current
             except Exception as exc:
                 current_error = f'充电状态不可用：{exc}'
         if not 2.5 <= voltage <= 4.5:
             raise ValueError(f'电池电压 {voltage:.3f} V 超出单节锂电合理范围，请检查地址和接线')
         return {'available': True, 'voltage': round(voltage, 3),
                 'current_ma': current, 'current_message': current_error,
+                'raw_current_ma': raw_current, 'current_polarity': polarity,
                 'percent': estimate_percent(voltage),
                 'estimated': True, 'message': ''}
     except Exception as exc:

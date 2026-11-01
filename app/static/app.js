@@ -85,8 +85,6 @@ function updateHeaderBattery(percent=null,voltage=null,message='',chargeState='u
   gauge.classList.toggle('charging',chargeState==='charging');gauge.classList.toggle('low',known && value<20);
   const chargeLabels={charging:'充电中',discharging:'放电中',idle:'未充电',full:'已充满',unknown:'充电状态未知'};
   const chargeLabel=chargeLabels[chargeState]||chargeLabels.unknown;
-  $('header-battery-state').textContent=chargeLabel;
-  $('header-battery-state').className='connection'+(chargeState==='charging'?' status-active':chargeState==='full'?'':' status-unknown');
   gauge.setAttribute('role',known?'meter':'img');
   gauge.setAttribute('aria-label',known?'电池电量':'电量未知');
   if(known){
@@ -125,7 +123,7 @@ function updateHeaderStatus(){
   const detail=state.screen.error||(state.running?`正在刷新：${state.running.title}`:state.pending?`${state.pending} 项内容等待刷新`:'刷新队列空闲');
   set('header-screen',text[screen]||'屏幕状态未知',kind,detail);
   const battery=state.battery.available && Number.isFinite(state.battery.percent);
-  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'',state.battery.charge_state||'unknown',state.battery.current_ma,state.battery.current_message||'');
+  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'',state.battery.charge_state||'unknown',Number.isFinite(state.battery.raw_current_ma)?state.battery.raw_current_ma:state.battery.current_ma,state.battery.current_message||'');
 }
 async function refreshStatus() {
   const request=++statusRequest;

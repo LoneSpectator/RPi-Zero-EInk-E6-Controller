@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass
 import json
 import logging
 import math
+import os
 from statistics import median
 from threading import Lock
 import time
@@ -14,6 +15,15 @@ CURRENT_DEADBAND_MA = 10
 SAMPLE_SECONDS = 4
 FULL_SETTLE_SECONDS = 180
 EMPTY_SETTLE_SECONDS = 30
+MODEL_VERSION = 2
+
+
+def current_polarity():
+    value = int(os.getenv('INA219_CURRENT_POLARITY', '-1'))
+    if value not in (-1, 1):
+        raise ValueError('INA219_CURRENT_POLARITY 必须为 -1 或 1')
+    return value
+
 
 # Representative 4.2 V Li-ion/LiPo open-circuit curve, not a pack-specific fuel
 # gauge. Endpoints are adapted only after the cycle conditions below are met.
@@ -37,6 +47,8 @@ def estimate_percent(voltage, empty_voltage=3.0, full_voltage=4.2):
 
 @dataclass
 class Learning:
+    model_version: int = MODEL_VERSION
+    current_polarity: int = -1
     full_voltage: float = 4.2
     empty_voltage: float = 3.0
     full_calibrated_at: float | None = None
@@ -54,18 +66,31 @@ class BatteryMonitor:
     def __init__(self, store, driver, reader, clock=time.time):
         self.store, self.driver, self.reader, self.clock = store, driver, reader, clock
         self.lock = Lock()
-        self.learning = Learning()
+        self.current_polarity = current_polarity()
+        self.learning = Learning(current_polarity=self.current_polarity)
+        reset_learning = False
         row = store.one('SELECT payload FROM battery_learning WHERE singleton=1')
         if row and driver != 'mock':
             try:
-                self.learning = Learning(**json.loads(row['payload']))
-                item = self.learning
-                if not (4.05 <= item.full_voltage <= 4.3 and 2.8 <= item.empty_voltage <= 3.4
-                        and (item.resistance_ohm is None or 0.02 <= item.resistance_ohm <= 0.5)):
-                    raise ValueError('Invalid learned battery values')
+                saved = json.loads(row['payload'])
+                if not isinstance(saved, dict):
+                    raise ValueError('Invalid battery calibration data')
+                if saved.get('model_version') != MODEL_VERSION or saved.get('current_polarity') != self.current_polarity:
+                    # Earlier versions learned using the wrong physical current
+                    # direction. Their endpoints, resistance and cycle flags
+                    # cannot be reused under the corrected convention.
+                    reset_learning = True
+                    log.info('Relearning battery parameters after current polarity change')
+                else:
+                    self.learning = Learning(**saved)
+                    item = self.learning
+                    if not (4.05 <= item.full_voltage <= 4.3 and 2.8 <= item.empty_voltage <= 3.4
+                            and (item.resistance_ohm is None or 0.02 <= item.resistance_ohm <= 0.5)):
+                        raise ValueError('Invalid learned battery values')
             except (TypeError, ValueError):
                 log.warning('Ignoring invalid battery calibration', exc_info=True)
-                self.learning = Learning()
+                self.learning = Learning(current_polarity=self.current_polarity)
+                reset_learning = True
         self.cached = None
         self.cached_at = None
         self.saved_at = self.clock()
@@ -74,6 +99,8 @@ class BatteryMonitor:
         self.full_candidate = None
         self.empty_candidate = None
         self.filtered_ocv = None
+        if reset_learning:
+            self._save(self.clock())
 
     def _save(self, now):
         if self.driver == 'mock':
