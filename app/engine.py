@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import logging
+import json
 import threading
 import time
 from croniter import croniter
@@ -10,10 +11,12 @@ from .store import now_ts, new_id
 from .hardware import MockDisplay, WaveshareDisplay, battery_status
 from .battery import BatteryMonitor, LOW_BATTERY_PERCENT
 from .render import battery_warning
+from .wallpaper import fetch_bing_wallpaper, has_displayable_content, WallpaperCancelled
 
 log = logging.getLogger(__name__)
 GRACE_SECONDS = 120
 MAX_PENDING = 20
+BING_RETRY_SECONDS = 30
 
 
 class DisplayBusyError(Exception):
@@ -50,7 +53,7 @@ def _validate_disabled(expression, now, tz):
 
 
 class Engine:
-    def __init__(self, store, settings, display=None):
+    def __init__(self, store, settings, display=None, wallpaper_fetcher=None):
         self.store, self.settings = store, settings
         self.display = display or (MockDisplay(settings.mock_delay) if settings.driver == 'mock' else WaveshareDisplay())
         self.battery = BatteryMonitor(store, settings.driver, battery_status)
@@ -58,6 +61,8 @@ class Engine:
         self.stop_event = threading.Event()
         self.threads = []
         self.next_log_cleanup = 0
+        self.wallpaper_fetcher = wallpaper_fetcher or fetch_bing_wallpaper
+        self.startup_wallpaper = {'status': 'pending' if settings.bing_default_wallpaper else 'disabled', 'message': ''}
 
     def start(self):
         with self.store.connection() as db:
@@ -69,6 +74,10 @@ class Engine:
         self.next_log_cleanup = time.monotonic() + 60
         for target in (self.work_loop, self.schedule_loop):
             thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            self.threads.append(thread)
+        if self.settings.bing_default_wallpaper:
+            thread = threading.Thread(target=self.bootstrap_wallpaper, daemon=True)
             thread.start()
             self.threads.append(thread)
 
@@ -92,6 +101,58 @@ class Engine:
             job_id = new_id()
             db.execute("INSERT INTO jobs(id,content_id,title,status,created_at) VALUES(?,?,?,'pending',?)", (job_id, content_id, content['title'], now_ts()))
         return job_id
+
+    def bootstrap_wallpaper(self):
+        while not self.stop_event.is_set():
+            try:
+                if has_displayable_content(self.store):
+                    self.startup_wallpaper = {'status': 'skipped', 'message': ''}
+                    return
+                self.startup_wallpaper = {'status': 'downloading', 'message': '正在获取 Bing 今日壁纸，获取后将自动刷新到屏幕。'}
+                wallpaper = self.wallpaper_fetcher(self.stop_event)
+                if self.stop_event.is_set():
+                    return
+                installed = self.install_startup_wallpaper(wallpaper)
+                self.startup_wallpaper = {'status': 'queued' if installed else 'skipped', 'message': ''}
+                return
+            except WallpaperCancelled:
+                return
+            except Exception:
+                log.warning('Bing startup wallpaper unavailable; will retry', exc_info=True)
+                self.startup_wallpaper = {'status': 'retrying', 'message': '暂时无法获取 Bing 今日壁纸，稍后自动重试；也可上传自己的内容。'}
+                deadline = time.monotonic() + BING_RETRY_SECONDS
+                while time.monotonic() < deadline:
+                    if self.stop_event.wait(min(1, max(0, deadline - time.monotonic()))):
+                        return
+                    if has_displayable_content(self.store):
+                        self.startup_wallpaper = {'status': 'skipped', 'message': ''}
+                        return
+
+    def install_startup_wallpaper(self, wallpaper):
+        if not 1 <= len(wallpaper.title.strip()) <= 120 or wallpaper.image.size != (800, 480):
+            raise ValueError('默认壁纸内容无效')
+        content_id, job_id = new_id(), new_id()
+        path = self.store.image_path(content_id)
+        installed = False
+        try:
+            wallpaper.image.save(path, format='PNG')
+            with self.store.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
+                # A user may upload/display their own content while the network
+                # download is in flight. Recheck before committing anything.
+                if self.stop_event.is_set() or has_displayable_content(self.store, db):
+                    return None
+                if db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('pending','running')").fetchone()[0] >= MAX_PENDING:
+                    raise ValueError('刷新队列已满，稍后重试默认壁纸')
+                db.execute('INSERT INTO contents(id,title,kind,created_at,payload) VALUES(?,?,?,?,?)',
+                           (content_id, wallpaper.title.strip(), 'image', now_ts(), json.dumps(wallpaper.payload, ensure_ascii=False)))
+                db.execute("INSERT INTO jobs(id,content_id,title,status,created_at,purpose) VALUES(?,?,?,'pending',?,'startup_wallpaper')",
+                           (job_id, content_id, wallpaper.title.strip(), now_ts()))
+            installed = True
+            return {'content_id': content_id, 'job_id': job_id}
+        finally:
+            if not installed:
+                path.unlink(missing_ok=True)
 
     def tick(self, now=None):
         now = now if now is not None else now_ts()

@@ -11,6 +11,7 @@ services:
             WEB_PASSWORD: ${WEB_PASSWORD:-}
             INA219_ADDRESS: ${INA219_ADDRESS:-0x43}
             INA219_CURRENT_POLARITY: ${INA219_CURRENT_POLARITY:--1}
+            BING_DEFAULT_WALLPAPER: ${BING_DEFAULT_WALLPAPER:-true}
             I2C_BUS: "1"
             GPIO_CHIP: "0"
         devices:

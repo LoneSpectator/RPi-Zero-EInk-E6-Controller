@@ -12,6 +12,7 @@ let displaySubmitting = false, displayAwaitingStatus = false;
 const saving = {image:false, text:false};
 let logsData=null, logsPage=1, logsPageSize=20, logsRequest=0;
 let logsLoading=false, logsSaving=false, logsRetentionLoaded=false, logsRetentionDirty=false;
+let libraryTextSource=null, libraryTextTimer;
 
 function syncDisplayControls() {
   const reason = !statusAvailable ? '无法确认屏幕状态，暂不能提交刷新，正在重新连接。'
@@ -135,9 +136,13 @@ async function refreshStatus() {
     if(request!==statusRequest)return;
     const serverTime=Date.parse(next.now);
     if(!Number.isFinite(serverTime))throw new Error('服务器时间不可用');
+    const previousStartup=state?.startup_wallpaper?.status;
     state=next;serverTimeBase=serverTime;serverTimeReceivedAt=performance.now();
     statusAvailable=true;displayAwaitingStatus=false;syncDisplayControls();clock();
     updateHeaderStatus();
+    const startup=state.startup_wallpaper;
+    $('startup-notice').hidden=!startup||!['downloading','retrying'].includes(startup.status);
+    $('startup-notice').textContent=startup?.message||'';
     $('mode-note').textContent=state.driver==='mock'?'当前为模拟模式：可验证全部内容与排程功能，不会驱动物理屏幕，电量不模拟。':'';
     $('screen-error').textContent=state.screen.error||'';
     $('current-title').textContent=state.screen.title||'还没有显示内容';
@@ -148,6 +153,7 @@ async function refreshStatus() {
     $('upcoming').innerHTML=state.upcoming.length?state.upcoming.map(s=>`<div class="upcoming-item"><div class="schedule-time">${escapeHTML(formatTime(s.next_run,{month:undefined,day:undefined}))}<small>${escapeHTML(formatTime(s.next_run,{hour:undefined,minute:undefined}))}</small></div><div><strong>${escapeHTML(s.content_title)}</strong><p>${escapeHTML(s.title)} · ${s.kind==='cron'?'循环':'单次'}</p></div></div>`).join(''):'<div class="empty-state">把下一帧交给时间<br><a class="text-link" href="#schedule">创建你的第一个排程 ↗</a></div>';
     renderJobTable('job-history',state.jobs.slice(0,5),state.timezone);
     $('schedule-tz').textContent=state.timezone;
+    if(startup?.status==='queued'&&previousStartup!=='queued')refreshContents().catch(error=>toast(error.message,true));
   } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); updateHeaderStatus(); if(!state)toast(e.message,true);}
 }
 function renderJobTable(id,jobs,timezone=state?.timezone||'Asia/Shanghai'){
@@ -163,7 +169,7 @@ function jobTable(jobs,timezone,opened){
     const timestamp=job.finished_at??job.created_at;
     const parts=Object.fromEntries(formatter.formatToParts(new Date(timestamp*1000)).map(part=>[part.type,part.value]));
     const time=`<time datetime="${new Date(timestamp*1000).toISOString()}" title="${job.finished_at!=null?'完成时间':'提交时间'}"><span>${parts.year}-${parts.month}-${parts.day}</span><span>${parts.hour}:${parts.minute}:${parts.second}</span></time>`;
-    const source=job.purpose==='battery_warning'?'电量提醒':job.scheduled_for!=null?'定时':'手动';
+    const source=job.purpose==='startup_wallpaper'?'默认壁纸':job.purpose==='battery_warning'?'电量提醒':job.scheduled_for!=null?'定时':'手动';
     const badge=`<span class="job-state${job.status==='failed'?' failed':''}">${escapeHTML(labels[job.status]||job.status)}</span>`;
     const status=job.error?`<details class="log-error"${opened.has(job.id)?' open':''}><summary title="查看失败原因">${badge}</summary><p>${escapeHTML(job.error)}</p></details>`:badge;
     return `<tr data-job-id="${escapeHTML(job.id)}"><td class="log-time">${time}</td><td class="log-content">${escapeHTML(job.title)}</td><td class="log-type">${source}</td><td class="log-status">${status}</td></tr>`;
@@ -239,10 +245,11 @@ function syncLibrarySelection(){
   $('confirm-delete').textContent=libraryDeleting?'正在删除…':'确认删除';
 }
 function renderLibrary(){
+  hideLibraryText();
   const filtered=filteredContents(), visibleIds=new Set(filtered.map(c=>c.id));
   for(const id of selectedContents)if(!visibleIds.has(id))selectedContents.delete(id);
   $('library-summary').textContent=`共 ${filtered.length} 份内容`;
-  $('library-rows').innerHTML=filtered.map(c=>`<tr data-content-id="${c.id}"><td class="library-check"><input type="checkbox" data-select-content="${c.id}" aria-label="选择 ${escapeHTML(c.title)}"></td><td><div class="library-content"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"><div class="library-details"><strong>${escapeHTML(c.title)}</strong><small>${c.kind==='text'?'文本':'图片'}</small><small class="library-mobile-date">创建 ${escapeHTML(formatTime(c.created_at))}<br>${c.last_displayed?'最近显示 '+escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</small></div></div></td><td class="library-date">${escapeHTML(formatTime(c.created_at))}</td><td class="library-date">${c.last_displayed?escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</td><td class="library-row-actions"><div class="table-action-group"><button class="button primary table-action" data-display="${c.id}">显示</button><button class="button secondary table-action" data-schedule="${c.id}">排程</button><button class="button secondary table-action" data-rename="${c.id}">重命名</button></div></td></tr>`).join('');
+  $('library-rows').innerHTML=filtered.map(c=>`<tr data-content-id="${c.id}"><td class="library-check"><input type="checkbox" data-select-content="${c.id}" aria-label="选择 ${escapeHTML(c.title)}"></td><td><div class="library-content"><button type="button" class="library-thumbnail" data-preview="${c.id}" aria-label="放大预览 ${escapeHTML(c.title)}"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"></button><div class="library-details"><strong title="${escapeHTML(c.title)}">${escapeHTML(c.title)}</strong>${c.kind==='text'?`<small class="library-text-preview" tabindex="0">${escapeHTML(c.text_content||'')}</small>`:''}</div></div></td><td class="library-date">${escapeHTML(formatTime(c.created_at))}</td><td class="library-date">${c.last_displayed?escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</td><td class="library-row-actions"><div class="table-action-group"><button class="button primary table-action" data-display="${c.id}">显示</button><button class="button secondary table-action" data-schedule="${c.id}">排程</button><button class="button secondary table-action" data-rename="${c.id}">重命名</button></div></td></tr>`).join('');
   $('library-list').hidden=!filtered.length;$('library-empty').hidden=Boolean(filtered.length);
   $('library-empty').innerHTML=contents.length?'没有符合条件的内容':'这里还没有内容<br><a href="#image" class="text-link">上传第一张照片 ↗</a>';
   syncLibrarySelection();syncDisplayControls();
@@ -260,11 +267,47 @@ $('library-select-all').addEventListener('change',e=>{
 $('library-rows').addEventListener('click',async e=>{
   const button=e.target.closest('button');if(!button)return;
   try{
+    if(button.dataset.preview){openContentPreview(button.dataset.preview);return;}
     if(button.dataset.display)await displayContent(button.dataset.display);
     if(button.dataset.schedule)await openSchedule(null,button.dataset.schedule);
     if(button.dataset.rename)openRename(button.dataset.rename);
   }catch(err){toast(err.message,true);}
 });
+function openContentPreview(id){
+  const item=contents.find(content=>content.id===id);if(!item)return;
+  hideLibraryText();
+  $('content-preview-image').alt=item.title;$('content-preview-image').src=`/api/contents/${id}/image`;
+  if(!$('content-preview-dialog').open)$('content-preview-dialog').showModal();
+}
+$('close-content-preview').addEventListener('click',()=>$('content-preview-dialog').close());
+$('content-preview-dialog').addEventListener('click',event=>{if(event.target===$('content-preview-dialog'))$('content-preview-dialog').close();});
+$('content-preview-dialog').addEventListener('close',()=>$('content-preview-image').removeAttribute('src'));
+$('content-preview-image').addEventListener('error',()=>{
+  if($('content-preview-dialog').open){$('content-preview-dialog').close();toast('图片预览加载失败',true);}
+});
+function hideLibraryText(){
+  clearTimeout(libraryTextTimer);$('library-text-tooltip').hidden=true;
+  libraryTextSource?.removeAttribute('aria-describedby');libraryTextSource=null;
+}
+function showLibraryText(source){
+  clearTimeout(libraryTextTimer);if(!source.textContent)return;
+  if(libraryTextSource!==source)libraryTextSource?.removeAttribute('aria-describedby');
+  libraryTextSource=source;source.setAttribute('aria-describedby','library-text-tooltip');
+  const tooltip=$('library-text-tooltip');tooltip.textContent=source.textContent;tooltip.hidden=false;
+  const rect=source.getBoundingClientRect();
+  tooltip.style.left=Math.max(16,Math.min(rect.left,innerWidth-tooltip.offsetWidth-16))+'px';
+  tooltip.style.top=(rect.bottom+8+tooltip.offsetHeight>innerHeight-16?Math.max(16,rect.top-tooltip.offsetHeight-8):rect.bottom+8)+'px';
+}
+function deferHideLibraryText(){clearTimeout(libraryTextTimer);libraryTextTimer=setTimeout(hideLibraryText,180);}
+$('library-rows').addEventListener('mouseover',event=>{const source=event.target.closest('.library-text-preview');if(source)showLibraryText(source);});
+$('library-rows').addEventListener('mouseout',event=>{if(event.target.closest('.library-text-preview'))deferHideLibraryText();});
+$('library-rows').addEventListener('focusin',event=>{if(event.target.matches('.library-text-preview'))showLibraryText(event.target);});
+$('library-rows').addEventListener('focusout',event=>{if(event.target.matches('.library-text-preview'))deferHideLibraryText();});
+$('library-text-tooltip').addEventListener('mouseenter',()=>clearTimeout(libraryTextTimer));
+$('library-text-tooltip').addEventListener('mouseleave',deferHideLibraryText);
+document.addEventListener('pointerdown',event=>{if(event.target!==libraryTextSource&&!$('library-text-tooltip').contains(event.target))hideLibraryText();});
+window.addEventListener('resize',hideLibraryText);
+document.addEventListener('scroll',event=>{if(event.target!==$('library-text-tooltip'))hideLibraryText();},true);
 $('library-delete').addEventListener('click',()=>{
   if(libraryDeleting)return;
   deleteTargets=filteredContents().filter(c=>selectedContents.has(c.id));
@@ -309,7 +352,7 @@ $('rename-form').addEventListener('submit',async e=>{
       $(type+'-title').value=item.title;
       if(type==='image')previews[type].payload.set('title',item.title);else previews[type].payload.title=item.title;
     }
-    contents=contents.map(c=>c.id===item.id?item:c);renderLibrary();
+    contents=contents.map(c=>c.id===item.id?{...c,...item}:c);renderLibrary();
     $('rename-dialog').close();renameContentId=null;
     await Promise.all([refreshContents(),refreshSchedules(),refreshStatus()]);toast('内容名称已修改');
   }catch(err){if($('rename-dialog').open)$('rename-error').textContent=err.message;else toast(err.message,true);}

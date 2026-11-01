@@ -20,7 +20,7 @@ with TemporaryDirectory(prefix='photopainter-library-') as directory:
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     url = f'http://127.0.0.1:{listener.getsockname()[1]}'
-    app = create_app(Settings(data_dir=Path(directory), driver='mock', password='', mock_delay=.01))
+    app = create_app(Settings(bing_default_wallpaper=False, data_dir=Path(directory), driver='mock', password='', mock_delay=.01))
     server = uvicorn.Server(uvicorn.Config(app, log_level='error'))
     thread = Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
     thread.start()
@@ -60,6 +60,44 @@ with TemporaryDirectory(prefix='photopainter-library-') as directory:
             headings = page.locator('.library-table th').evaluate_all('(cells)=>cells.map(c=>({align:getComputedStyle(c).textAlign,size:parseFloat(getComputedStyle(c).fontSize)}))')
             body_size = page.locator('.library-details strong').first.evaluate('(el)=>parseFloat(getComputedStyle(el).fontSize)')
             assert all(h['align']=='center' and h['size']>=body_size for h in headings)
+
+            # Images have only their title; text exposes a compact, complete
+            # second line and an accessible full-text tooltip.
+            image_details = page.locator(f'[data-content-id="{images[0]["id"]}"] .library-details')
+            expect(image_details).to_have_text(images[0]['title'])
+            summary = page.locator(f'[data-content-id="{text["id"]}"] .library-text-preview')
+            expected_body = automatic_name + '第二行'
+            expect(summary).to_have_text(expected_body)
+            assert summary.evaluate('(el)=>el.scrollWidth>el.clientWidth&&getComputedStyle(el).textOverflow==="ellipsis"')
+            summary.hover()
+            expect(page.locator('#library-text-tooltip')).to_have_text(expected_body)
+            page.locator('#library-text-tooltip').hover()
+            page.wait_for_timeout(250)
+            expect(page.locator('#library-text-tooltip')).to_be_visible()
+            page.locator('#library-search').click()
+            expect(page.locator('#library-text-tooltip')).to_be_hidden()
+            summary.focus()
+            expect(summary).to_have_attribute('aria-describedby', 'library-text-tooltip')
+            expect(page.locator('#library-text-tooltip')).to_be_visible()
+
+            # Enlarging either thumbnail never queues a screen refresh. Image
+            # clicks keep it open; blank space, Escape and the close button exit.
+            for item in (images[0], text):
+                thumbnail = page.locator(f'[data-preview="{item["id"]}"]')
+                thumbnail.click()
+                expect(page.locator('#content-preview-dialog')).to_be_visible()
+                expect(page.locator('#content-preview-image')).to_have_js_property('naturalWidth', 800)
+                page.locator('#content-preview-image').click()
+                expect(page.locator('#content-preview-dialog')).to_be_visible()
+                page.mouse.click(8, 8)
+                expect(page.locator('#content-preview-dialog')).not_to_be_visible()
+                thumbnail.click()
+                page.keyboard.press('Escape')
+                expect(page.locator('#content-preview-dialog')).not_to_be_visible()
+                thumbnail.click()
+                page.locator('#close-content-preview').click()
+                expect(page.locator('#content-preview-dialog')).not_to_be_visible()
+            assert page.request.get(url+'/api/jobs').json()['total'] == 0
 
             # Cancel, whitespace validation, then rename without losing selection.
             rename = page.locator(f'[data-rename="{images[0]["id"]}"]')
@@ -154,7 +192,7 @@ with TemporaryDirectory(prefix='photopainter-library-') as directory:
             assert page.request.get(url+'/api/contents').json() == []
             assert not errors,errors
             browser.close()
-        print('Library browser checks passed: automatic text names, rename/cancel/validation, cached preview consistency, centered headings, filter/delete layout, selection and filtering, batch deletion, schedule protection and mobile layout.')
+        print('Library browser checks passed: thumbnail enlargement and dismissal, complete compact text and hover/focus tooltip, title-only images, automatic names, rename, cached previews, selection, deletion, schedule protection and mobile layout.')
     finally:
         server.should_exit = True
         thread.join(timeout=5)

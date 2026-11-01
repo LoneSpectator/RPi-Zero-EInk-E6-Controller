@@ -34,7 +34,7 @@ with TemporaryDirectory(prefix='photopainter-refresh-') as directory:
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     url = f'http://127.0.0.1:{listener.getsockname()[1]}'
-    app = create_app(Settings(data_dir=Path(directory), driver='mock', password=''), display=display)
+    app = create_app(Settings(bing_default_wallpaper=False, data_dir=Path(directory), driver='mock', password=''), display=display)
     server = uvicorn.Server(uvicorn.Config(app, log_level='error'))
     thread = Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
     thread.start()

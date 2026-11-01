@@ -28,6 +28,7 @@ with sync_playwright() as p:
     page.wait_for_timeout(2500)
     page.locator('nav a[data-page="text"]').click()
     page.locator('#text-title').fill('留给明天的诗')
+    page.locator('#text-editor').evaluate("el=>{el.innerHTML='<p><br></p>';el.dispatchEvent(new Event('input',{bubbles:true}));}")
     page.locator('#text-editor').click()
     page.keyboard.press('Control+A')
     page.keyboard.insert_text('山有木兮木有枝，\n心悦君兮君不知。')

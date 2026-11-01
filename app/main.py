@@ -24,7 +24,7 @@ MAX_UPLOAD = 12 * 1024 * 1024
 basic = HTTPBasic(auto_error=False)
 
 
-def create_app(settings=None, display=None):
+def create_app(settings=None, display=None, wallpaper_fetcher=None):
     settings = settings or Settings()
 
     @asynccontextmanager
@@ -38,7 +38,7 @@ def create_app(settings=None, display=None):
             raise RuntimeError('同一数据目录仅允许运行一个进程；请使用 --workers 1')
         try:
             app.state.store = Store(settings.data_dir)
-            app.state.engine = Engine(app.state.store, settings, display)
+            app.state.engine = Engine(app.state.store, settings, display, wallpaper_fetcher)
             app.state.engine.start()
             yield
         finally:
@@ -90,11 +90,21 @@ def create_app(settings=None, display=None):
     def store():
         return app.state.store
 
+    def with_text_content(item):
+        if item['kind'] == 'text':
+            try:
+                payload = json.loads(item['payload'])
+                text = ''.join(run['text'] for paragraph in payload['paragraphs'] for run in paragraph['runs'])
+                item['text_content'] = ''.join(text.split())
+            except (TypeError, ValueError, KeyError):
+                item['text_content'] = ''
+        return item
+
     def content(content_id):
         item = store().one('SELECT * FROM contents WHERE id=?', (content_id,))
         if not item:
             raise HTTPException(404, '内容不存在')
-        return item
+        return with_text_content(item)
 
     def save_content(title, kind, payload, image):
         title = title.strip()
@@ -140,6 +150,7 @@ def create_app(settings=None, display=None):
                 'driver': settings.driver, 'battery': app.state.engine.battery.status(), 'screen': state,
                 'running': running, 'pending': pending, 'display_busy': bool(running or pending),
                 'fonts': font_status(), 'auth_enabled': bool(settings.password),
+                'startup_wallpaper': app.state.engine.startup_wallpaper.copy(),
                 'upcoming': store().rows('SELECT s.*,c.title AS content_title FROM schedules s JOIN contents c ON c.id=s.content_id WHERE enabled=1 ORDER BY next_run LIMIT 6'),
                 'jobs': store().job_history(recent=True)}
 
@@ -168,7 +179,11 @@ def create_app(settings=None, display=None):
 
     @app.get('/api/contents', dependencies=[Depends(auth)])
     def list_contents():
-        return store().rows('SELECT id,title,kind,created_at,last_displayed FROM contents ORDER BY created_at DESC,rowid DESC')
+        items = store().rows('SELECT id,title,kind,created_at,last_displayed,payload FROM contents ORDER BY created_at DESC,rowid DESC')
+        for item in items:
+            with_text_content(item)
+            item.pop('payload')
+        return items
 
     @app.get('/api/contents/{content_id}/image', dependencies=[Depends(auth)])
     def content_image(content_id: str):
