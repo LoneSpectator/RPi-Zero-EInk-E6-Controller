@@ -25,7 +25,7 @@ class Paragraph(StrictModel):
 
 
 class TextContent(StrictModel):
-    title: str = Field(default='文字内容', min_length=1, max_length=120)
+    title: str = Field(default='', max_length=120)
     background: Color = '#ffffff'
     padding: int = Field(default=24, ge=0, le=80)
     paragraphs: list[Paragraph] = Field(min_length=1, max_length=50)
@@ -34,6 +34,15 @@ class TextContent(StrictModel):
     def check_length(self):
         if sum(len(r.text) for p in self.paragraphs for r in p.runs) > 5000:
             raise ValueError('文字总长度不能超过 5000 字')
+        self.title = self.title.strip()
+        if not self.title:
+            for paragraph in self.paragraphs:
+                for line in ''.join(run.text for run in paragraph.runs).splitlines():
+                    title = ''.join(line.split())
+                    if title:
+                        self.title = title[:120]
+                        return self
+            raise ValueError('请先输入文字')
         return self
 
 
@@ -48,3 +57,14 @@ class ScheduleInput(StrictModel):
 
 class ContentsDelete(StrictModel):
     content_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(min_length=1)
+
+
+class ContentRename(StrictModel):
+    title: str = Field(min_length=1, max_length=120)
+
+    @model_validator(mode='after')
+    def check_title(self):
+        self.title = self.title.strip()
+        if not self.title:
+            raise ValueError('内容名称不能为空')
+        return self

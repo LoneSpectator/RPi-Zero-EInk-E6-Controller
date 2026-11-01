@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .limits import RequestSizeLimit
 from .config import Settings
-from .models import TextContent, ScheduleInput, ContentsDelete
+from .models import TextContent, ScheduleInput, ContentsDelete, ContentRename
 from .render import render_text, render_image, png, font_status
 from .store import Store, new_id, now_ts
 from .engine import DisplayBusyError, Engine, schedule_values
@@ -175,6 +175,22 @@ def create_app(settings=None, display=None):
     def content_image(content_id: str):
         content(content_id)
         return FileResponse(store().image_path(content_id), media_type='image/png')
+
+    @app.patch('/api/contents/{content_id}', dependencies=[Depends(auth)])
+    def rename_content(content_id: str, spec: ContentRename):
+        with store().connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            item = db.execute('SELECT * FROM contents WHERE id=?', (content_id,)).fetchone()
+            if not item:
+                raise HTTPException(404, '内容不存在')
+            payload = json.loads(item['payload'])
+            if item['kind'] == 'text':
+                payload['title'] = spec.title
+            db.execute('UPDATE contents SET title=?,payload=? WHERE id=?',
+                       (spec.title, json.dumps(payload, ensure_ascii=False), content_id))
+            db.execute("UPDATE jobs SET title=? WHERE content_id=? AND status IN ('pending','running')", (spec.title, content_id))
+            db.execute('UPDATE display_state SET title=? WHERE content_id=?', (spec.title, content_id))
+        return content(content_id)
 
     def delete_contents(content_ids):
         content_ids = list(dict.fromkeys(content_ids))

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from io import BytesIO
+import json
 import time
 import pytest
 from fastapi.testclient import TestClient
@@ -111,6 +112,82 @@ def test_text_preview_styles_palette_and_overflow(client):
     assert client.get(f"/api/contents/{content.json()['id']}/image").content == preview.content
     doc['paragraphs'][0]['runs'][0]['text'] = '超出屏幕' * 100
     assert client.post('/api/preview/text', json=doc).status_code == 422
+
+
+@pytest.mark.parametrize('title', [None, '', ' \t\u3000'])
+def test_text_automatic_name_preview_and_save(client, title):
+    doc = {'paragraphs': [
+        {'runs': [{'text': ' \t\u3000'}]},
+        {'runs': [{'text': '\n \u00a0日 '}, {'text': '子\t 缓缓， \n万物可爱。'}]},
+    ]}
+    if title is not None:
+        doc['title'] = title
+    preview = client.post('/api/preview/text', json=doc)
+    assert preview.status_code == 200, preview.text
+    saved = client.post('/api/contents/text', json=doc)
+    assert saved.status_code == 201, saved.text
+    item = saved.json()
+    assert item['title'] == '日子缓缓，'
+    assert json.loads(item['payload'])['title'] == item['title']
+    assert client.get(f"/api/contents/{item['id']}/image").content == preview.content
+
+
+def test_text_automatic_name_limits_and_manual_title():
+    paragraphs = [{'runs': [{'text': '\n \t\n'}, {'text': ' 字 ' * 150 + '\n下一行'}]}]
+    assert TextContent(paragraphs=paragraphs).title == '字' * 120
+    assert TextContent(title='  手写 名称  ', paragraphs=paragraphs).title == '手写 名称'
+    with pytest.raises(ValueError, match='请先输入文字'):
+        TextContent(paragraphs=[{'runs': [{'text': '\n \t\u3000\u00a0'}]}])
+
+
+@pytest.mark.parametrize('kind', ['image', 'text'])
+def test_rename_content_updates_references_without_changing_picture(client, kind):
+    if kind == 'image':
+        item = upload(client, title='旧名称')
+    else:
+        response = client.post('/api/contents/text', json={'title': '旧名称', 'paragraphs': [{'runs': [{'text': '正文'}]}]})
+        assert response.status_code == 201
+        item = response.json()
+    url = '/api/contents/' + item['id']
+    picture = client.get(url + '/image').content
+    job = client.post(url + '/display').json()['job_id']
+    assert wait_job(client, job)['status'] == 'done'
+    screen = client.get('/api/screen').content
+    schedule = client.post('/api/schedules', json={'title': '独立排程名称', 'content_id': item['id'], 'kind': 'cron', 'cron': '0 8 * * *', 'enabled': False})
+    assert schedule.status_code == 201
+    renamed = client.patch(url, json={'title': '  新名称 <测试>  '})
+    assert renamed.status_code == 200, renamed.text
+    saved = renamed.json()
+    assert saved['id'] == item['id'] and saved['title'] == '新名称 <测试>'
+    assert saved['created_at'] == item['created_at']
+    if kind == 'text':
+        assert json.loads(saved['payload'])['title'] == saved['title']
+        assert json.loads(saved['payload'])['paragraphs'] == json.loads(item['payload'])['paragraphs']
+    assert client.get('/api/contents').json()[0]['title'] == saved['title']
+    listed_schedule = client.get('/api/schedules').json()[0]
+    assert listed_schedule['title'] == '独立排程名称' and listed_schedule['content_title'] == saved['title']
+    assert client.get('/api/status').json()['screen']['title'] == saved['title']
+    assert client.get(url + '/image').content == picture
+    assert client.get('/api/screen').content == screen
+    # Completed history retains the name used at the time of the refresh.
+    assert client.get('/api/jobs/' + job).json()['title'] == '旧名称'
+    next_job = client.post(url + '/display').json()['job_id']
+    assert wait_job(client, next_job)['title'] == saved['title']
+
+
+@pytest.mark.parametrize('title', ['', ' \t\u3000', '名' * 121, None])
+def test_rename_rejects_invalid_names(client, title):
+    item = upload(client)
+    assert client.patch('/api/contents/' + item['id'], json={'title': title}).status_code == 422
+    assert client.get('/api/contents').json()[0]['title'] == item['title']
+
+
+def test_rename_missing_content_and_auth(settings):
+    settings.password = 'test-password'
+    with TestClient(create_app(settings)) as client:
+        response = client.patch('/api/contents/missing', json={'title': '新名称'})
+        assert response.status_code == 401
+        assert client.patch('/api/contents/missing', json={'title': '新名称'}, auth=('admin', 'test-password')).status_code == 404
 
 
 @pytest.mark.parametrize('field,value', [('color', '#884422'), ('font', 'evil'), ('size', 500)])
@@ -342,6 +419,29 @@ class BlockingDisplay:
             raise TimeoutError('test display was not released')
         if self.fail:
             raise OSError('test refresh failure')
+
+
+def test_rename_during_refresh_updates_running_and_pending_jobs(settings):
+    display = BlockingDisplay()
+    app = create_app(settings, display=display)
+    with TestClient(app) as client:
+        try:
+            item = upload(client, title='刷新前')
+            url = '/api/contents/' + item['id']
+            running = client.post(url + '/display').json()['job_id']
+            assert display.started.wait(2)
+            pending = app.state.engine.enqueue(item['id'], require_idle=False)
+            response = client.patch(url, json={'title': '刷新中改名'})
+            assert response.status_code == 200
+            status = client.get('/api/status').json()
+            assert status['running']['title'] == '刷新中改名'
+            assert client.get('/api/jobs/' + pending).json()['title'] == '刷新中改名'
+            display.release.set()
+            assert wait_job(client, running)['title'] == '刷新中改名'
+            assert wait_job(client, pending)['status'] == 'done'
+            assert client.get('/api/status').json()['screen']['title'] == '刷新中改名'
+        finally:
+            display.release.set()
 
 
 @pytest.mark.parametrize('scheduled', [False, True])

@@ -6,6 +6,7 @@ let serverTimeBase = null, serverTimeReceivedAt = 0;
 let toastTimer;
 const selectedContents = new Set();
 let libraryDeleting = false, deleteTargets = [];
+let libraryRenaming = false, renameContentId = null;
 let statusAvailable = false, statusRequest = 0;
 let displaySubmitting = false, displayAwaitingStatus = false;
 const saving = {image:false, text:false};
@@ -92,7 +93,7 @@ function updateHeaderBattery(percent=null,voltage=null,message=''){
   const details=[];
   if(known)details.push(`电量 ${value}%`);
   if(Number.isFinite(voltage))details.push(`电压 ${voltage.toFixed(3)} V`);
-  if(message)details.push(message);
+  if(!known && message)details.push(message);
   gauge.title=details.join(' · ')||'电量未知';
   level.style.strokeDashoffset=String(known?100-value:100);
   level.style.opacity=known && value>0?'1':'0';
@@ -165,7 +166,7 @@ function renderLibrary(){
   const filtered=filteredContents(), visibleIds=new Set(filtered.map(c=>c.id));
   for(const id of selectedContents)if(!visibleIds.has(id))selectedContents.delete(id);
   $('library-summary').textContent=`共 ${filtered.length} 份内容`;
-  $('library-rows').innerHTML=filtered.map(c=>`<tr data-content-id="${c.id}"><td class="library-check"><input type="checkbox" data-select-content="${c.id}" aria-label="选择 ${escapeHTML(c.title)}"></td><td><div class="library-content"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"><div class="library-details"><strong>${escapeHTML(c.title)}</strong><small>${c.kind==='text'?'文本':'图片'}</small><small class="library-mobile-date">创建 ${escapeHTML(formatTime(c.created_at))}<br>${c.last_displayed?'最近显示 '+escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</small></div></div></td><td class="library-date">${escapeHTML(formatTime(c.created_at))}</td><td class="library-date">${c.last_displayed?escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</td><td class="library-row-actions"><button class="text-button" data-display="${c.id}">显示 ↗</button><button class="text-button" data-schedule="${c.id}">排程</button></td></tr>`).join('');
+  $('library-rows').innerHTML=filtered.map(c=>`<tr data-content-id="${c.id}"><td class="library-check"><input type="checkbox" data-select-content="${c.id}" aria-label="选择 ${escapeHTML(c.title)}"></td><td><div class="library-content"><img src="/api/contents/${c.id}/image" loading="lazy" alt="${escapeHTML(c.title)}"><div class="library-details"><strong>${escapeHTML(c.title)}</strong><small>${c.kind==='text'?'文本':'图片'}</small><small class="library-mobile-date">创建 ${escapeHTML(formatTime(c.created_at))}<br>${c.last_displayed?'最近显示 '+escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</small></div></div></td><td class="library-date">${escapeHTML(formatTime(c.created_at))}</td><td class="library-date">${c.last_displayed?escapeHTML(formatTime(c.last_displayed)):'尚未显示'}</td><td class="library-row-actions"><button class="text-button" data-display="${c.id}">显示 ↗</button><button class="text-button" data-schedule="${c.id}">排程</button><button class="text-button" data-rename="${c.id}">重命名</button></td></tr>`).join('');
   $('library-list').hidden=!filtered.length;$('library-empty').hidden=Boolean(filtered.length);
   $('library-empty').innerHTML=contents.length?'没有符合条件的内容':'这里还没有内容<br><a href="#image" class="text-link">上传第一张照片 ↗</a>';
   syncLibrarySelection();syncDisplayControls();
@@ -185,6 +186,7 @@ $('library-rows').addEventListener('click',async e=>{
   try{
     if(button.dataset.display)await displayContent(button.dataset.display);
     if(button.dataset.schedule)await openSchedule(null,button.dataset.schedule);
+    if(button.dataset.rename)openRename(button.dataset.rename);
   }catch(err){toast(err.message,true);}
 });
 $('library-delete').addEventListener('click',()=>{
@@ -208,6 +210,34 @@ $('confirm-delete').addEventListener('click',async()=>{
     await refreshContents();toast(`已删除 ${result.deleted_ids.length} 份内容`);
   }catch(e){$('delete-error').textContent=e.message;}
   finally{libraryDeleting=false;syncLibrarySelection();}
+});
+function syncRenameControls(){
+  for(const id of ['rename-title','confirm-rename','cancel-rename','close-rename'])$(id).disabled=libraryRenaming;
+  $('confirm-rename').textContent=libraryRenaming?'正在保存…':'保存';
+}
+function openRename(id){
+  const item=contents.find(c=>c.id===id);if(!item)return;
+  renameContentId=id;$('rename-title').value=item.title;$('rename-error').textContent='';
+  syncRenameControls();$('rename-dialog').showModal();$('rename-title').focus();$('rename-title').select();
+}
+for(const id of ['close-rename','cancel-rename'])$(id).addEventListener('click',()=>{if(!libraryRenaming)$('rename-dialog').close();});
+$('rename-dialog').addEventListener('cancel',e=>{if(libraryRenaming)e.preventDefault();});
+$('rename-form').addEventListener('submit',async e=>{
+  e.preventDefault();if(libraryRenaming || !renameContentId)return;
+  const title=$('rename-title').value.trim();
+  if(!title){$('rename-error').textContent='内容名称不能为空';$('rename-title').focus();return;}
+  libraryRenaming=true;syncRenameControls();$('rename-error').textContent='';
+  try{
+    const item=await api(`/api/contents/${renameContentId}`,{method:'PATCH',...json({title})});
+    for(const type of ['image','text'])if(previews[type]?.id===item.id){
+      $(type+'-title').value=item.title;
+      if(type==='image')previews[type].payload.set('title',item.title);else previews[type].payload.title=item.title;
+    }
+    contents=contents.map(c=>c.id===item.id?item:c);renderLibrary();
+    $('rename-dialog').close();renameContentId=null;
+    await Promise.all([refreshContents(),refreshSchedules(),refreshStatus()]);toast('内容名称已修改');
+  }catch(err){if($('rename-dialog').open)$('rename-error').textContent=err.message;else toast(err.message,true);}
+  finally{libraryRenaming=false;syncRenameControls();}
 });
 function invalidate(type){versions[type]++;previews[type]=null;syncDisplayControls();}
 let selectedFile=null;
@@ -266,7 +296,7 @@ function textPayload(){
   }
   gather(editor);if(nodes.length)flush(editor);
   if(!paragraphs.length||!editor.textContent.trim())throw new Error('请先输入文字');
-  const title=$('text-title').value.trim();if(!title)throw new Error('请填写内容名称');
+  const title=$('text-title').value.trim();
   return {title,background:$('text-background').value,padding:Number($('text-padding').value),paragraphs};
 }
 async function preview(type){

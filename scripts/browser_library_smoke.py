@@ -41,23 +41,65 @@ with TemporaryDirectory(prefix='photopainter-library-') as directory:
                 response = page.request.post(url+'/api/contents/image', multipart={'file':{'name':'test.png','mimeType':'image/png','buffer':data.getvalue()},'title':title})
                 assert response.status == 201,response.text()
                 images.append(response.json())
-            response = page.request.post(url+'/api/contents/text', data={'title':'很长的文字内容名称'*8,'paragraphs':[{'runs':[{'text':'测试列表'}]}]})
-            assert response.status == 201,response.text()
-            text = response.json()
+            # A blank name must allow preview/save and use the first nonblank line,
+            # including text spanning differently styled runs and a BR line break.
+            page.goto(url+'/#text')
+            page.locator('#text-title').fill('  ')
+            automatic_name = '很长的文字内容名称'*8
+            page.locator('#text-editor').evaluate('(el, name)=>{el.innerHTML=`<p>&nbsp; </p><p> 很长的文字 <b>${name.slice(5)}</b><br>第二行</p>`}', automatic_name)
+            page.locator('#text-preview').click()
+            expect(page.locator('#text-save')).to_be_enabled()
+            page.locator('#text-save').click()
+            expect(page.locator('#toast')).to_have_text('内容已保存，可在内容库和排程中使用')
+            text = next(c for c in page.request.get(url+'/api/contents').json() if c['kind']=='text')
+            assert text['title'] == automatic_name
             page.goto(url+'/#library')
             expect(page.locator('#library-rows tr')).to_have_count(3)
             expect(page.locator('#library-delete')).to_be_hidden()
-            expect(page.locator('.library-actions a')).to_have_text('＋ 创建内容')
+            expect(page.locator('#page-library a.button')).to_have_count(0)
+            headings = page.locator('.library-table th').evaluate_all('(cells)=>cells.map(c=>({align:getComputedStyle(c).textAlign,size:parseFloat(getComputedStyle(c).fontSize)}))')
+            body_size = page.locator('.library-details strong').first.evaluate('(el)=>parseFloat(getComputedStyle(el).fontSize)')
+            assert all(h['align']=='center' and h['size']>=body_size for h in headings)
+
+            # Cancel, whitespace validation, then rename without losing selection.
+            rename = page.locator(f'[data-rename="{images[0]["id"]}"]')
+            rename.click()
+            expect(page.locator('#rename-title')).to_have_value(images[0]['title'])
+            page.locator('#rename-title').fill('取消这次修改')
+            page.locator('#cancel-rename').click()
+            assert page.request.get(url+'/api/contents').json()[2]['title'] == images[0]['title']
+            page.locator(f'[data-select-content="{images[0]["id"]}"]').check()
+            rename.click()
+            page.locator('#rename-title').fill('  ')
+            page.locator('#confirm-rename').click()
+            expect(page.locator('#rename-error')).to_have_text('内容名称不能为空')
+            page.locator('#rename-title').fill('新风景 <测试>')
+            page.locator('#rename-title').press('Enter')
+            expect(page.locator('#rename-dialog')).not_to_be_visible()
+            expect(page.locator(f'[data-content-id="{images[0]["id"]}"] .library-details strong')).to_have_text('新风景 <测试>')
+            expect(page.locator(f'[data-select-content="{images[0]["id"]}"]')).to_be_checked()
+
+            # The cached text preview follows a library rename without a new entry.
+            page.locator(f'[data-rename="{text["id"]}"]').click()
+            page.locator('#rename-title').fill(automatic_name+'改名')
+            page.locator('#confirm-rename').click()
+            expect(page.locator('#rename-dialog')).not_to_be_visible()
+            page.goto(url+'/#text')
+            expect(page.locator('#text-title')).to_have_value(automatic_name+'改名')
+            page.locator('#text-save').click()
+            expect(page.locator('#toast')).to_have_text('内容已保存，可在内容库和排程中使用')
+            assert len(page.request.get(url+'/api/contents').json()) == 3
+            page.goto(url+'/#library')
 
             page.locator(f'[data-select-content="{images[0]["id"]}"]').check()
             assert page.locator('#library-select-all').evaluate('(el)=>el.indeterminate')
             expect(page.locator('#library-delete')).to_have_text('删除（1）')
-            create = page.locator('.library-actions a').bounding_box()
+            filter = page.locator('#library-filter').bounding_box()
             delete = page.locator('#library-delete').bounding_box()
-            assert delete['x'] >= create['x']+create['width']
+            assert delete['x'] >= filter['x']+filter['width'] and abs(delete['y']-filter['y'])<3
             page.locator('#library-delete').click()
             expect(page.locator('#delete-dialog')).to_be_visible()
-            expect(page.locator('#delete-names')).to_contain_text('风景 <测试>')
+            expect(page.locator('#delete-names')).to_contain_text('新风景 <测试>')
             assert page.locator('#delete-names script').count() == 0
             page.locator('#cancel-delete').click()
             assert len(page.request.get(url+'/api/contents').json()) == 3
@@ -112,7 +154,7 @@ with TemporaryDirectory(prefix='photopainter-library-') as directory:
             assert page.request.get(url+'/api/contents').json() == []
             assert not errors,errors
             browser.close()
-        print('Library browser checks passed: list layout, selection and filtering, cancel/confirm batch deletion, schedule protection, empty state and mobile layout.')
+        print('Library browser checks passed: automatic text names, rename/cancel/validation, cached preview consistency, centered headings, filter/delete layout, selection and filtering, batch deletion, schedule protection and mobile layout.')
     finally:
         server.should_exit = True
         thread.join(timeout=5)

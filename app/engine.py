@@ -120,10 +120,13 @@ class Engine:
             snapshot = f"screen-{job['id']}.png"
             image.save(self.store.root / snapshot)
             with self.store.connection() as db:
+                db.execute('BEGIN IMMEDIATE')
                 previous = db.execute('SELECT snapshot FROM display_state').fetchone()[0]
-                db.execute("UPDATE jobs SET status='done',finished_at=? WHERE id=?", (now_ts(), job['id']))
+                # Content can be renamed while the physical refresh is in progress.
+                title = db.execute('SELECT title FROM contents WHERE id=?', (job['content_id'],)).fetchone()[0]
+                db.execute("UPDATE jobs SET title=?,status='done',finished_at=? WHERE id=?", (title, now_ts(), job['id']))
                 db.execute('UPDATE contents SET last_displayed=? WHERE id=?', (now_ts(), job['content_id']))
-                db.execute("UPDATE display_state SET content_id=?,title=?,updated_at=?,snapshot=?,status='idle',error=NULL", (job['content_id'], job['title'], now_ts(), snapshot))
+                db.execute("UPDATE display_state SET content_id=?,title=?,updated_at=?,snapshot=?,status='idle',error=NULL", (job['content_id'], title, now_ts(), snapshot))
             if previous:
                 try:
                     (self.store.root / previous).unlink(missing_ok=True)
