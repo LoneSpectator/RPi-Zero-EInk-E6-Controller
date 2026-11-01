@@ -1,6 +1,7 @@
 from typing import Annotated, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict, model_validator
+from .store import MAX_LOG_RETENTION_DAYS
 
 Color = Literal['#000000', '#ffffff', '#ff0000', '#ffff00', '#0000ff', '#00ff00']
 Font = Literal['heiti', 'songti', 'kaiti', 'source-sans', 'source-serif']
@@ -20,7 +21,7 @@ class Run(StrictModel):
 
 
 class Paragraph(StrictModel):
-    align: Literal['left', 'center', 'right'] = 'left'
+    align: Literal['left', 'center', 'right', 'justify'] = 'left'
     runs: list[Run] = Field(min_length=1, max_length=300)
 
 
@@ -28,6 +29,7 @@ class TextContent(StrictModel):
     title: str = Field(default='', max_length=120)
     background: Color = '#ffffff'
     padding: int = Field(default=24, ge=0, le=80)
+    vertical_align: Literal['top', 'center', 'bottom'] = 'top'
     paragraphs: list[Paragraph] = Field(min_length=1, max_length=50)
 
     @model_validator(mode='after')
@@ -68,3 +70,7 @@ class ContentRename(StrictModel):
         if not self.title:
             raise ValueError('内容名称不能为空')
         return self
+
+
+class LogSettings(StrictModel):
+    retention_days: int = Field(ge=1, le=MAX_LOG_RETENTION_DAYS, strict=True)

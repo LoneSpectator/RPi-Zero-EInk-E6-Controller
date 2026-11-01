@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import logging
 import threading
+import time
 from croniter import croniter
 from PIL import Image
 from .store import now_ts, new_id
@@ -56,6 +57,7 @@ class Engine:
         self.battery_clear_since = None
         self.stop_event = threading.Event()
         self.threads = []
+        self.next_log_cleanup = 0
 
     def start(self):
         with self.store.connection() as db:
@@ -63,6 +65,8 @@ class Engine:
             db.execute("UPDATE jobs SET status='failed', error='进程中断，物理画面待重新刷新确认', finished_at=? WHERE status='running'", (now_ts(),))
             if interrupted:
                 db.execute("UPDATE display_state SET status='unknown',error='上次刷新被中断，实际画面未知'")
+        self.store.prune_jobs()
+        self.next_log_cleanup = time.monotonic() + 60
         for target in (self.work_loop, self.schedule_loop):
             thread = threading.Thread(target=target, daemon=True)
             thread.start()
@@ -188,6 +192,9 @@ class Engine:
     def schedule_loop(self):
         while not self.stop_event.is_set():
             try:
+                if time.monotonic() >= self.next_log_cleanup:
+                    self.store.prune_jobs()
+                    self.next_log_cleanup = time.monotonic() + 60
                 self.tick()
                 self.update_battery_warning()
             except Exception:

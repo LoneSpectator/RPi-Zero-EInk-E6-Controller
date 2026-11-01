@@ -104,12 +104,12 @@ def render_text(doc: TextContent):
         lines, line, width, height = [], [], 0, 0
         pending_height = 0
 
-        def append_line(items, w, h):
+        def append_line(items, w, h, wrapped=False):
             nonlocal pending_height
             pending_height += h
             if y + pending_height > HEIGHT - doc.padding:
                 raise ValueError('文字超出屏幕高度，请减少内容或缩小字号')
-            lines.append((items, w, h))
+            lines.append((items, w, h, wrapped))
 
         for run in paragraph.runs:
             for char in run.text:
@@ -121,21 +121,47 @@ def render_text(doc: TextContent):
                     continue
                 tile, advance, h = glyph(run, char)
                 if line and width + advance + max(0, tile.width - advance) > available:
-                    append_line(line, width, height)
+                    append_line(line, width, height, wrapped=True)
                     line, width, height = [], 0, 0
-                line.append((tile, advance))
+                line.append((tile, advance, char))
                 width += advance
                 height = max(height, h)
         default_h = round(paragraph.runs[0].size * 1.4)
         append_line(line, width, height or default_h)
-        for items, w, h in lines:
+        for items, w, h, wrapped in lines:
             if y + h > HEIGHT - doc.padding:
                 raise ValueError('文字超出屏幕高度，请减少内容或缩小字号')
+            if paragraph.align == 'justify' and wrapped:
+                while items and items[-1][2].isspace():
+                    w -= items.pop()[1]
             visual_w = w + (max(0, items[-1][0].width - items[-1][1]) if items else 0)
-            x = doc.padding + (0 if paragraph.align == 'left' else (available - visual_w) // (2 if paragraph.align == 'center' else 1))
-            for tile, advance in items:
+            x = doc.padding
+            if paragraph.align == 'center':
+                x += (available - visual_w) // 2
+            elif paragraph.align == 'right':
+                x += available - visual_w
+            gaps = []
+            if paragraph.align == 'justify' and wrapped and len(items) > 1:
+                # Expand word spaces for Latin text, character gaps for CJK.
+                # Last lines and explicit line breaks keep their natural width.
+                gaps = [i for i, (_, _, char) in enumerate(items[:-1]) if char.isspace()]
+                if not gaps:
+                    gaps = list(range(len(items) - 1))
+            extra = max(0, available - visual_w)
+            gap_set, seen = set(gaps), 0
+            for index, (tile, advance, _) in enumerate(items):
                 image.paste(tile, (x, y), tile)
                 x += advance
+                if index in gap_set:
+                    x += extra * (seen + 1) // len(gaps) - extra * seen // len(gaps)
+                    seen += 1
             y += h
+    used_height = y - doc.padding
+    remaining = HEIGHT - 2 * doc.padding - used_height
+    if doc.vertical_align != 'top' and remaining > 0:
+        offset = remaining // 2 if doc.vertical_align == 'center' else remaining
+        content = image.crop((0, doc.padding, WIDTH, y))
+        image = Image.new('RGB', (WIDTH, HEIGHT), doc.background)
+        image.paste(content, (0, doc.padding + offset))
     # Antialiasing is mapped to six colors, so preview and sent pixels match.
     return quantize(image, dither=False)

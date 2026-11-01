@@ -10,6 +10,8 @@ let libraryRenaming = false, renameContentId = null;
 let statusAvailable = false, statusRequest = 0;
 let displaySubmitting = false, displayAwaitingStatus = false;
 const saving = {image:false, text:false};
+let logsData=null, logsPage=1, logsPageSize=20, logsRequest=0;
+let logsLoading=false, logsSaving=false, logsRetentionLoaded=false, logsRetentionDirty=false;
 
 function syncDisplayControls() {
   const reason = !statusAvailable ? '无法确认屏幕状态，暂不能提交刷新，正在重新连接。'
@@ -28,7 +30,7 @@ function syncDisplayControls() {
 const previews = {image:null, text:null};
 const versions = {image:0, text:0};
 const urls = {};
-const names = {overview:'概览',image:'图片',text:'文本',library:'内容库',schedule:'排程'};
+const names = {overview:'概览',image:'图片',text:'文本',library:'内容库',schedule:'排程',logs:'日志'};
 const labels = {pending:'等待刷新',running:'刷新中',done:'已完成',failed:'失败',idle:'待机',unknown:'待确认',refreshing:'刷新中',error:'刷新失败'};
 
 function toast(message, error=false) {
@@ -56,6 +58,7 @@ function page() {
   $('breadcrumb').textContent=names[key];
   if(key==='library')refreshContents().catch(e=>toast(e.message,true));
   if(key==='schedule')refreshSchedules().catch(e=>toast(e.message,true));
+  if(key==='logs')refreshLogs(logsPage).catch(()=>{});
 }
 window.addEventListener('hashchange',page);
 function serverNow(){
@@ -143,10 +146,77 @@ async function refreshStatus() {
       $('current-screen').src='/api/screen?v='+encodeURIComponent(state.screen.snapshot);$('current-screen').hidden=false;$('screen-empty').hidden=true;lastSnapshot=state.screen.snapshot;
     }
     $('upcoming').innerHTML=state.upcoming.length?state.upcoming.map(s=>`<div class="upcoming-item"><div class="schedule-time">${escapeHTML(formatTime(s.next_run,{month:undefined,day:undefined}))}<small>${escapeHTML(formatTime(s.next_run,{hour:undefined,minute:undefined}))}</small></div><div><strong>${escapeHTML(s.content_title)}</strong><p>${escapeHTML(s.title)} · ${s.kind==='cron'?'循环':'单次'}</p></div></div>`).join(''):'<div class="empty-state">把下一帧交给时间<br><a class="text-link" href="#schedule">创建你的第一个排程 ↗</a></div>';
-    $('job-history').innerHTML=state.jobs.length?state.jobs.map(j=>`<div class="history-row"><span>${escapeHTML(j.title)}${j.error?`<small class="error-text"> ${escapeHTML(j.error)}</small>`:''}</span><span class="muted">${j.purpose==='battery_warning'?'电量提醒':j.scheduled_for?'定时':'手动'}</span><time class="muted">${escapeHTML(formatTime(j.created_at))}</time><span class="job-state ${j.status==='failed'?'failed':''}">${escapeHTML(labels[j.status])}</span></div>`).join(''):'<div class="empty-state">还没有刷新记录</div>';
+    renderJobTable('job-history',state.jobs.slice(0,5),state.timezone);
     $('schedule-tz').textContent=state.timezone;
   } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); updateHeaderStatus(); if(!state)toast(e.message,true);}
 }
+function renderJobTable(id,jobs,timezone=state?.timezone||'Asia/Shanghai'){
+  const root=$(id), key=JSON.stringify([timezone,jobs]);
+  if(root.jobsKey===key)return;
+  const opened=new Set(Array.from(root.querySelectorAll('tr[data-job-id] details[open]'),el=>el.closest('tr').dataset.jobId));
+  root.innerHTML=jobTable(jobs,timezone,opened);root.jobsKey=key;
+}
+function jobTable(jobs,timezone,opened){
+  if(!jobs.length)return '<div class="empty-state">还没有刷新记录</div>';
+  const formatter=new Intl.DateTimeFormat('sv-SE',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  return `<table class="logs-table"><thead><tr><th scope="col" class="log-time">日期时间</th><th scope="col">刷新内容</th><th scope="col" class="log-type">类型</th><th scope="col" class="log-status">状态</th></tr></thead><tbody>${jobs.map(job=>{
+    const timestamp=job.finished_at??job.created_at;
+    const parts=Object.fromEntries(formatter.formatToParts(new Date(timestamp*1000)).map(part=>[part.type,part.value]));
+    const time=`<time datetime="${new Date(timestamp*1000).toISOString()}" title="${job.finished_at!=null?'完成时间':'提交时间'}"><span>${parts.year}-${parts.month}-${parts.day}</span><span>${parts.hour}:${parts.minute}:${parts.second}</span></time>`;
+    const source=job.purpose==='battery_warning'?'电量提醒':job.scheduled_for!=null?'定时':'手动';
+    const badge=`<span class="job-state${job.status==='failed'?' failed':''}">${escapeHTML(labels[job.status]||job.status)}</span>`;
+    const status=job.error?`<details class="log-error"${opened.has(job.id)?' open':''}><summary title="查看失败原因">${badge}</summary><p>${escapeHTML(job.error)}</p></details>`:badge;
+    return `<tr data-job-id="${escapeHTML(job.id)}"><td class="log-time">${time}</td><td class="log-content">${escapeHTML(job.title)}</td><td class="log-type">${source}</td><td class="log-status">${status}</td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+function syncLogControls(){
+  const busy=logsLoading||logsSaving;
+  $('logs-previous').disabled=busy||!logsData||logsPage<=1;
+  $('logs-next').disabled=busy||!logsData||logsPage>=logsData.total_pages;
+  $('logs-page-size').disabled=busy;
+  $('logs-retention').disabled=logsSaving||!logsRetentionLoaded;
+  $('logs-save').disabled=logsSaving||!logsRetentionLoaded;
+  $('logs-save').textContent=logsSaving?'正在保存…':'保存';
+}
+async function refreshLogs(targetPage=logsPage){
+  const request=++logsRequest;
+  logsLoading=true;syncLogControls();
+  try{
+    const result=await api(`/api/jobs?page=${targetPage}&page_size=${logsPageSize}`);
+    if(request!==logsRequest)return;
+    logsData=result;logsPage=result.page;logsPageSize=result.page_size;
+    if(!logsRetentionDirty&&!logsSaving)$('logs-retention').value=result.retention_days;
+    logsRetentionLoaded=true;$('logs-page-size').value=String(result.page_size);
+    renderJobTable('logs-list',result.items,result.timezone);
+    $('logs-summary').textContent=`共 ${result.total} 条记录`;
+    $('logs-page-label').textContent=`第 ${result.page} / ${result.total_pages} 页`;
+    $('logs-error').textContent='';
+  }catch(error){
+    if(request===logsRequest){
+      $('logs-error').textContent=error.message;
+      if(logsData){logsPageSize=logsData.page_size;$('logs-page-size').value=String(logsPageSize);}
+    }
+    throw error;
+  }finally{if(request===logsRequest){logsLoading=false;syncLogControls();}}
+}
+$('logs-page-size').addEventListener('change',()=>{
+  logsPageSize=Number($('logs-page-size').value);refreshLogs(1).catch(()=>{});
+});
+$('logs-previous').addEventListener('click',()=>{if(!logsLoading&&!logsSaving&&logsPage>1)refreshLogs(logsPage-1).catch(()=>{});});
+$('logs-next').addEventListener('click',()=>{if(!logsLoading&&!logsSaving&&logsData&&logsPage<logsData.total_pages)refreshLogs(logsPage+1).catch(()=>{});});
+$('logs-retention').addEventListener('input',()=>{logsRetentionDirty=true;$('logs-settings-error').textContent='';});
+$('logs-settings-form').addEventListener('submit',async event=>{
+  event.preventDefault();if(logsSaving)return;
+  const days=Number($('logs-retention').value);
+  if(!Number.isInteger(days)||days<1||days>36500){$('logs-settings-error').textContent='请填写 1–36500 的整数天数';return;}
+  logsSaving=true;syncLogControls();$('logs-settings-error').textContent='';
+  try{
+    const result=await api('/api/settings/logs',{method:'PUT',...json({retention_days:days})});
+    logsRetentionDirty=false;$('logs-retention').value=result.retention_days;
+    await Promise.all([refreshLogs(1),refreshStatus()]);toast('日志保留天数已保存');
+  }catch(error){$('logs-settings-error').textContent=error.message;}
+  finally{logsSaving=false;syncLogControls();}
+});
 async function refreshContents(){contents=await api('/api/contents');$('library-count').textContent=contents.length;renderLibrary();}
 function filteredContents(){
   const query=$('library-search').value.trim().toLowerCase(),filter=$('library-filter').value;
@@ -263,10 +333,27 @@ function imagePayload(){
 // The browser editor emits a constrained document, never arbitrary HTML.
 let selection=null;
 const editor=$('text-editor');
-document.addEventListener('selectionchange',()=>{const s=getSelection();if(s.rangeCount&&editor.contains(s.anchorNode)&&editor.contains(s.focusNode))selection=s.getRangeAt(0).cloneRange();});
+let textVerticalAlign='top';
+const horizontalAlignButtons=document.querySelectorAll('.toolbar [data-horizontal-align]');
+const verticalAlignButtons=document.querySelectorAll('.toolbar button[data-vertical-align]');
+function syncTextAlignments(){
+  const selected=getSelection();
+  if(selected.rangeCount&&editor.contains(selected.anchorNode)&&editor.contains(selected.focusNode)){
+    horizontalAlignButtons.forEach(button=>button.setAttribute('aria-pressed',String(document.queryCommandState(button.dataset.command))));
+  }
+  verticalAlignButtons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.verticalAlign===textVerticalAlign)));
+}
+document.addEventListener('selectionchange',()=>{const s=getSelection();if(s.rangeCount&&editor.contains(s.anchorNode)&&editor.contains(s.focusNode)){selection=s.getRangeAt(0).cloneRange();syncTextAlignments();}});
 function restoreSelection(){editor.focus();if(selection&&editor.contains(selection.commonAncestorContainer)){const s=getSelection();s.removeAllRanges();s.addRange(selection);}}
-function command(name,value=null){restoreSelection();document.execCommand(name,false,value);invalidate('text');}
+function command(name,value=null){restoreSelection();document.execCommand(name,false,value);invalidate('text');syncTextAlignments();}
 document.querySelectorAll('[data-command]').forEach(b=>{b.addEventListener('mousedown',e=>e.preventDefault());b.addEventListener('click',()=>command(b.dataset.command));});
+verticalAlignButtons.forEach(button=>{
+  button.addEventListener('mousedown',event=>event.preventDefault());
+  button.addEventListener('click',()=>{
+    textVerticalAlign=button.dataset.verticalAlign;editor.dataset.verticalAlign=textVerticalAlign;
+    syncTextAlignments();invalidate('text');
+  });
+});
 $('font-family').addEventListener('change',e=>command('fontName',e.target.value));
 $('font-size').addEventListener('change',e=>{command('fontSize','7');editor.querySelectorAll('font[size="7"]').forEach(f=>{f.removeAttribute('size');f.style.fontSize=e.target.value+'px';});invalidate('text');});
 const colorNames={'#000000':'黑','#ffffff':'白','#ff0000':'红','#ffff00':'黄','#0000ff':'蓝','#00ff00':'绿'};
@@ -280,6 +367,7 @@ editor.addEventListener('drop',e=>e.preventDefault());
 function textPayload(){
   const paragraphs=[];
   const nodes=[];
+  function alignment(block){const value=getComputedStyle(block).textAlign;return ['left','center','right','justify'].includes(value)?value:'left';}
   function gather(node){
     if(node.nodeType===Node.TEXT_NODE){if(node.textContent)nodes.push(node);return;}
     if(node.nodeName==='BR'){nodes.push(node);return;}
@@ -287,10 +375,10 @@ function textPayload(){
     if(block&&nodes.length)flush(node.parentElement);
     const start=paragraphs.length;
     node.childNodes.forEach(gather);
-    if(block){if(nodes.length)flush(node);else if(start===paragraphs.length)paragraphs.push({align:getComputedStyle(node).textAlign==='center'?'center':getComputedStyle(node).textAlign==='right'?'right':'left',runs:[{text:'',size:32}]});}
+    if(block){if(nodes.length)flush(node);else if(start===paragraphs.length)paragraphs.push({align:alignment(node),runs:[{text:'',size:32}]});}
   }
   function flush(block){
-    const align=getComputedStyle(block).textAlign;
+    const align=alignment(block);
     const runs=nodes.splice(0).map(n=>{
       const s=getComputedStyle(n.nodeType===Node.TEXT_NODE?n.parentElement:n);
       const font=s.fontFamily.split(',')[0].replaceAll(/["']/g,'').trim();
@@ -298,12 +386,12 @@ function textPayload(){
       let color='#'+rgb.map(x=>x.toString(16).padStart(2,'0')).join('');if(!(color in colorNames))color='#000000';
       return {text:n.nodeName==='BR'?'\n':n.textContent,color,font:['heiti','songti','kaiti','source-sans','source-serif'].includes(font)?font:'source-sans',size:Math.min(120,Math.max(12,Math.round(parseFloat(s.fontSize)))),bold:Number(s.fontWeight)>=600,italic:s.fontStyle==='italic'};
     });
-    paragraphs.push({align:align==='center'?'center':align==='right'?'right':'left',runs});
+    paragraphs.push({align,runs});
   }
   gather(editor);if(nodes.length)flush(editor);
   if(!paragraphs.length||!editor.textContent.trim())throw new Error('请先输入文字');
   const title=$('text-title').value.trim();
-  return {title,background:$('text-background').value,padding:Number($('text-padding').value),paragraphs};
+  return {title,background:$('text-background').value,padding:Number($('text-padding').value),vertical_align:textVerticalAlign,paragraphs};
 }
 async function preview(type){
   const button=$(type+'-preview');button.disabled=true;
@@ -399,4 +487,4 @@ $('schedule-list').addEventListener('click',async e=>{
 syncDisplayControls();page();refreshStatus();refreshContents().catch(e=>toast(e.message,true));
 setInterval(clock,1000);
 // Recursive timer avoids overlapping requests when hardware telemetry is slow.
-async function poll(){await refreshStatus();if(location.hash==='#schedule')await refreshSchedules().catch(()=>{});setTimeout(poll,state?.display_busy || displayAwaitingStatus ? 1000 : 4000);}setTimeout(poll,4000);
+async function poll(){await refreshStatus();if(location.hash==='#schedule')await refreshSchedules().catch(()=>{});if(location.hash==='#logs'&&!logsSaving&&!logsLoading)await refreshLogs(logsPage).catch(()=>{});setTimeout(poll,state?.display_busy || displayAwaitingStatus ? 1000 : 4000);}setTimeout(poll,4000);

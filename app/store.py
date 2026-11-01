@@ -4,6 +4,9 @@ from pathlib import Path
 import sqlite3
 import uuid
 
+MAX_LOG_RETENTION_DAYS = 36500
+LOG_TIME = 'COALESCE(finished_at,created_at)'
+
 
 def now_ts():
     return int(datetime.now(timezone.utc).timestamp())
@@ -48,6 +51,12 @@ class Store:
                 CREATE TABLE IF NOT EXISTS battery_learning (
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS log_settings (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                    retention_days INTEGER NOT NULL CHECK(retention_days >= 1)
+                );
+                INSERT OR IGNORE INTO log_settings VALUES(1,7);
+                CREATE INDEX IF NOT EXISTS jobs_record_time ON jobs(COALESCE(finished_at,created_at));
             ''')
             # Additive migration for existing deployments and saved screen images.
             for table, columns in {
@@ -81,3 +90,44 @@ class Store:
     def image_path(self, content_id):
         # Caller only uses UUIDs returned from database lookups.
         return self.root / 'contents' / f'{content_id}.png'
+
+    @staticmethod
+    def _prune_jobs(db, now, days):
+        cutoff = now - days * 86400
+        return db.execute(f"DELETE FROM jobs WHERE status IN ('done','failed') AND {LOG_TIME} < ?", (cutoff,)).rowcount
+
+    def prune_jobs(self, now=None):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            days = db.execute('SELECT retention_days FROM log_settings WHERE singleton=1').fetchone()[0]
+            return self._prune_jobs(db, now_ts() if now is None else now, days)
+
+    def log_settings(self):
+        return self.one('SELECT retention_days FROM log_settings WHERE singleton=1')
+
+    def update_log_settings(self, days):
+        if type(days) is not int or not 1 <= days <= MAX_LOG_RETENTION_DAYS:
+            raise ValueError(f'保留天数需要是 1–{MAX_LOG_RETENTION_DAYS} 的整数')
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('UPDATE log_settings SET retention_days=? WHERE singleton=1', (days,))
+            self._prune_jobs(db, now_ts(), days)
+        return {'retention_days': days}
+
+    def job_history(self, page=1, page_size=20, recent=False):
+        with self.connection() as db:
+            db.execute('BEGIN')
+            days = db.execute('SELECT retention_days FROM log_settings WHERE singleton=1').fetchone()[0]
+            cutoff = now_ts() - days * 86400
+            visible = f"(status IN ('pending','running') OR {LOG_TIME} >= ?)"
+            if recent:
+                return [dict(row) for row in db.execute(
+                    f'SELECT * FROM jobs WHERE {visible} ORDER BY {LOG_TIME} DESC,rowid DESC LIMIT 5', (cutoff,))]
+            total = db.execute(f'SELECT COUNT(*) FROM jobs WHERE {visible}', (cutoff,)).fetchone()[0]
+            pages = max(1, (total + page_size - 1) // page_size)
+            page = min(page, pages)
+            items = [dict(row) for row in db.execute(
+                f'SELECT * FROM jobs WHERE {visible} ORDER BY {LOG_TIME} DESC,rowid DESC LIMIT ? OFFSET ?',
+                (cutoff, page_size, (page - 1) * page_size))]
+            return {'items': items, 'total': total, 'page': page, 'page_size': page_size,
+                    'total_pages': pages, 'retention_days': days}

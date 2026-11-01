@@ -7,14 +7,14 @@ import logging
 import secrets
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Request, Query
 from fastapi.responses import FileResponse, Response, JSONResponse
 from fastapi.security import HTTPBasic
 from fastapi.staticfiles import StaticFiles
 
 from .limits import RequestSizeLimit
 from .config import Settings
-from .models import TextContent, ScheduleInput, ContentsDelete, ContentRename
+from .models import TextContent, ScheduleInput, ContentsDelete, ContentRename, LogSettings
 from .render import render_text, render_image, png, font_status, battery_warning
 from .store import Store, new_id, now_ts
 from .engine import DisplayBusyError, Engine, schedule_values
@@ -141,7 +141,7 @@ def create_app(settings=None, display=None):
                 'running': running, 'pending': pending, 'display_busy': bool(running or pending),
                 'fonts': font_status(), 'auth_enabled': bool(settings.password),
                 'upcoming': store().rows('SELECT s.*,c.title AS content_title FROM schedules s JOIN contents c ON c.id=s.content_id WHERE enabled=1 ORDER BY next_run LIMIT 6'),
-                'jobs': store().rows('SELECT * FROM jobs ORDER BY created_at DESC,rowid DESC LIMIT 12')}
+                'jobs': store().job_history(recent=True)}
 
     @app.get('/api/screen', dependencies=[Depends(auth)])
     def screen():
@@ -233,6 +233,20 @@ def create_app(settings=None, display=None):
     @app.post('/api/contents/{content_id}/display', dependencies=[Depends(auth)], status_code=202)
     def show(content_id: str):
         return {'job_id': app.state.engine.enqueue(content_id)}
+
+    @app.get('/api/jobs', dependencies=[Depends(auth)])
+    def job_history(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+        if page_size not in (20, 50, 100):
+            raise HTTPException(422, '每页条数只能为 20、50 或 100')
+        return {**store().job_history(page, page_size), 'timezone': settings.timezone}
+
+    @app.get('/api/settings/logs', dependencies=[Depends(auth)])
+    def log_settings():
+        return store().log_settings()
+
+    @app.put('/api/settings/logs', dependencies=[Depends(auth)])
+    def update_log_settings(spec: LogSettings):
+        return store().update_log_settings(spec.retention_days)
 
     @app.get('/api/jobs/{job_id}', dependencies=[Depends(auth)])
     def job(job_id: str):
