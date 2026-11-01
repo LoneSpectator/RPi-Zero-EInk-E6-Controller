@@ -377,11 +377,12 @@ def test_battery_voltage_endianness_and_unavailable(monkeypatch):
         def __exit__(self,*args):pass
         def read_i2c_block_data(self, addr, reg, length):
             assert addr == 0x43
-            return [0x39, 0x9f] if reg == 0 else [0x1c, 0x20]  # 3.6 V
+            return {0: [0x0e, 0xef], 1: [0, 0], 2: [0x1c, 0x20]}[reg]  # 3.6 V
         def write_i2c_block_data(self,*args):pass
     monkeypatch.setitem(sys.modules,'smbus2',SimpleNamespace(SMBus=Bus))
     result = battery_status('waveshare')
-    assert result['percent'] == 50 and result['voltage'] == 3.6 and result['estimated']
+    assert result['percent'] == 10 and result['voltage'] == 3.6 and result['estimated']
+    assert result['current_ma'] == 0
     class MissingBus:
         def __init__(self,*args):raise OSError('no I2C')
     monkeypatch.setitem(sys.modules,'smbus2',SimpleNamespace(SMBus=MissingBus))

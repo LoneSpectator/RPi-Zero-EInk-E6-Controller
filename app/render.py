@@ -18,6 +18,14 @@ FONT_FILES = {
 }
 
 
+def battery_warning(image, low):
+    if not low:
+        return image
+    image = image.copy()
+    ImageDraw.Draw(image).rectangle((0, 0, image.width - 1, image.height - 1), outline='#ff0000', width=5)
+    return image
+
+
 def font_path(name):
     return Path(os.getenv('FONT_' + name.upper().replace('-', '_'), FONT_FILES[name]))
 

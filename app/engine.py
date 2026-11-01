@@ -6,7 +6,9 @@ import threading
 from croniter import croniter
 from PIL import Image
 from .store import now_ts, new_id
-from .hardware import MockDisplay, WaveshareDisplay
+from .hardware import MockDisplay, WaveshareDisplay, battery_status
+from .battery import BatteryMonitor, LOW_BATTERY_PERCENT
+from .render import battery_warning
 
 log = logging.getLogger(__name__)
 GRACE_SECONDS = 120
@@ -50,6 +52,8 @@ class Engine:
     def __init__(self, store, settings, display=None):
         self.store, self.settings = store, settings
         self.display = display or (MockDisplay(settings.mock_delay) if settings.driver == 'mock' else WaveshareDisplay())
+        self.battery = BatteryMonitor(store, settings.driver, battery_status)
+        self.battery_clear_since = None
         self.stop_event = threading.Event()
         self.threads = []
 
@@ -112,24 +116,31 @@ class Engine:
             db.execute("UPDATE jobs SET status='running' WHERE id=?", (job['id'],))
             db.execute("UPDATE display_state SET status='refreshing',error=NULL")
         try:
-            if not job['content_id']:
+            if not job['content_id'] and not job['source_snapshot']:
                 raise ValueError('内容已删除')
-            with Image.open(self.store.image_path(job['content_id'])) as opened:
-                image = opened.convert('RGB')
+            path = self.store.root / job['source_snapshot'] if job['source_snapshot'] else self.store.image_path(job['content_id'])
+            with Image.open(path) as opened:
+                source = opened.convert('RGB')
+            low = self.low_battery()
+            image = battery_warning(source, low)
             self.display.display(image)
             snapshot = f"screen-{job['id']}.png"
+            source_snapshot = f"screen-source-{job['id']}.png"
             image.save(self.store.root / snapshot)
+            source.save(self.store.root / source_snapshot)
             with self.store.connection() as db:
                 db.execute('BEGIN IMMEDIATE')
-                previous = db.execute('SELECT snapshot FROM display_state').fetchone()[0]
+                previous = db.execute('SELECT snapshot,source_snapshot FROM display_state').fetchone()
                 # Content can be renamed while the physical refresh is in progress.
-                title = db.execute('SELECT title FROM contents WHERE id=?', (job['content_id'],)).fetchone()[0]
+                content = db.execute('SELECT title FROM contents WHERE id=?', (job['content_id'],)).fetchone()
+                title = content[0] if content else job['title']
                 db.execute("UPDATE jobs SET title=?,status='done',finished_at=? WHERE id=?", (title, now_ts(), job['id']))
                 db.execute('UPDATE contents SET last_displayed=? WHERE id=?', (now_ts(), job['content_id']))
-                db.execute("UPDATE display_state SET content_id=?,title=?,updated_at=?,snapshot=?,status='idle',error=NULL", (job['content_id'], title, now_ts(), snapshot))
-            if previous:
+                db.execute("UPDATE display_state SET content_id=?,title=?,updated_at=?,snapshot=?,source_snapshot=?,battery_warning=?,status='idle',error=NULL",
+                           (job['content_id'], title, now_ts(), snapshot, source_snapshot, int(low)))
+            for previous_path in set(previous) - {None, snapshot, source_snapshot}:
                 try:
-                    (self.store.root / previous).unlink(missing_ok=True)
+                    (self.store.root / previous_path).unlink(missing_ok=True)
                 except OSError:
                     log.warning('Old snapshot cleanup failed', exc_info=True)
         except Exception as exc:
@@ -139,10 +150,46 @@ class Engine:
                 db.execute("UPDATE display_state SET status='error',error=?", (f'刷新失败，实际画面可能不完整：{exc}',))
         return True
 
+    def low_battery(self):
+        battery = self.battery.status()
+        if battery['available'] and battery['percent'] is not None:
+            return battery['percent'] < LOW_BATTERY_PERCENT
+        # An unavailable sample must not erase an existing physical warning.
+        return bool(self.store.one('SELECT battery_warning FROM display_state')['battery_warning'])
+
+    def update_battery_warning(self):
+        battery = self.battery.status()
+        if not battery['available'] or battery['percent'] is None:
+            self.battery_clear_since = None
+            return
+        low = battery['percent'] < LOW_BATTERY_PERCENT
+        # Require sustained recovery before spending another e-paper refresh to
+        # remove the border. This avoids repeated refreshes around 19/20%.
+        if low:
+            self.battery_clear_since = None
+        elif self.battery_clear_since is None:
+            self.battery_clear_since = now_ts()
+        with self.store.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            state = db.execute('SELECT * FROM display_state').fetchone()
+            if not state['snapshot'] or state['status'] != 'idle' or bool(state['battery_warning']) == low:
+                return
+            if not low and now_ts() - self.battery_clear_since < 30:
+                return
+            if db.execute("SELECT 1 FROM jobs WHERE status IN ('pending','running') LIMIT 1").fetchone():
+                return
+            # Serialize automatic overlays with normal jobs, using the pristine
+            # successful screen source even if its library entry was deleted.
+            content = db.execute('SELECT id FROM contents WHERE id=?', (state['content_id'],)).fetchone()
+            db.execute('INSERT INTO jobs(id,content_id,title,status,created_at,source_snapshot,purpose) VALUES(?,?,?,?,?,?,?)',
+                       (new_id(), content[0] if content else None, state['title'] or '当前画面', 'pending', now_ts(),
+                        state['source_snapshot'] or state['snapshot'], 'battery_warning'))
+
     def schedule_loop(self):
         while not self.stop_event.is_set():
             try:
                 self.tick()
+                self.update_battery_warning()
             except Exception:
                 log.exception('Scheduler tick failed')
             self.stop_event.wait(1)

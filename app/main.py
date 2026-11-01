@@ -15,10 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from .limits import RequestSizeLimit
 from .config import Settings
 from .models import TextContent, ScheduleInput, ContentsDelete, ContentRename
-from .render import render_text, render_image, png, font_status
+from .render import render_text, render_image, png, font_status, battery_warning
 from .store import Store, new_id, now_ts
 from .engine import DisplayBusyError, Engine, schedule_values
-from .hardware import battery_status
 
 STATIC = Path(__file__).parent / 'static'
 MAX_UPLOAD = 12 * 1024 * 1024
@@ -138,7 +137,7 @@ def create_app(settings=None, display=None):
             running = dict(row) if row else None
             pending = db.execute("SELECT COUNT(*) FROM jobs WHERE status='pending'").fetchone()[0]
         return {'now': datetime.now(ZoneInfo(settings.timezone)).isoformat(), 'timezone': settings.timezone,
-                'driver': settings.driver, 'battery': battery_status(settings.driver), 'screen': state,
+                'driver': settings.driver, 'battery': app.state.engine.battery.status(), 'screen': state,
                 'running': running, 'pending': pending, 'display_busy': bool(running or pending),
                 'fonts': font_status(), 'auth_enabled': bool(settings.password),
                 'upcoming': store().rows('SELECT s.*,c.title AS content_title FROM schedules s JOIN contents c ON c.id=s.content_id WHERE enabled=1 ORDER BY next_run LIMIT 6'),
@@ -153,7 +152,7 @@ def create_app(settings=None, display=None):
 
     @app.post('/api/preview/text', dependencies=[Depends(auth)])
     def preview_text(doc: TextContent):
-        return Response(png(render_text(doc)), media_type='image/png')
+        return Response(png(battery_warning(render_text(doc), app.state.engine.low_battery())), media_type='image/png')
 
     @app.post('/api/contents/text', dependencies=[Depends(auth)], status_code=201)
     def create_text(doc: TextContent):
@@ -161,7 +160,7 @@ def create_app(settings=None, display=None):
 
     @app.post('/api/preview/image', dependencies=[Depends(auth)])
     def preview_image(file: UploadFile = File(), mode: str = Form('contain')):
-        return Response(png(render_image(upload_data(file), mode)), media_type='image/png')
+        return Response(png(battery_warning(render_image(upload_data(file), mode), app.state.engine.low_battery())), media_type='image/png')
 
     @app.post('/api/contents/image', dependencies=[Depends(auth)], status_code=201)
     def create_image(file: UploadFile = File(), title: str = Form('图片内容'), mode: str = Form('contain')):

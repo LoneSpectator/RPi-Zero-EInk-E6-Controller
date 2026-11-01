@@ -10,4 +10,7 @@ The original permissive license and copyright notice are retained in that file.
 Product pinout (BCM): RST 17, DC 25, BUSY 24, PWR 27; SPI0 CE0 via
 /dev/spidev0.0. Hardware chip select is controlled by spidev, as in the
 vendor RaspberryPi configuration. UPS I²C address 0x43 and the 3.0–4.2 V
-estimate are from UPS/INA219.py at the same upstream commit.
+single-cell operating range, 0.01 ohm shunt and 32-sample ADC configuration
+are from UPS/INA219.py at the same upstream commit. Current is read directly
+from signed shunt voltage (10 uV/LSB), without relying on the calibration
+register. The non-linear battery model and cycle learning are project code.

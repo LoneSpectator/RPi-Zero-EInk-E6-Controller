@@ -76,23 +76,31 @@ function clock() {
   $('header-clock').classList.remove('status-unknown');
   $('header-clock').title='服务器时间 · '+new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,weekday:'long'}).format(date)+' · '+state.timezone;
 }
-function updateHeaderBattery(percent=null,voltage=null,message=''){
+function updateHeaderBattery(percent=null,voltage=null,message='',chargeState='unknown',current=null,chargeMessage=''){
   const gauge=$('header-battery-gauge'), level=$('header-battery-level'), known=Number.isFinite(percent);
   const value=known?Math.round(Math.min(100,Math.max(0,percent))):null;
   const text=known?`${value}%`:'—%';
   if($('header-battery').textContent!==text)$('header-battery').textContent=text;
   gauge.classList.toggle('status-unknown',!known);
+  gauge.classList.toggle('charging',chargeState==='charging');gauge.classList.toggle('low',known && value<20);
+  const chargeLabels={charging:'充电中',discharging:'放电中',idle:'未充电',full:'已充满',unknown:'充电状态未知'};
+  const chargeLabel=chargeLabels[chargeState]||chargeLabels.unknown;
+  $('header-battery-state').textContent=chargeLabel;
+  $('header-battery-state').className='connection'+(chargeState==='charging'?' status-active':chargeState==='full'?'':' status-unknown');
   gauge.setAttribute('role',known?'meter':'img');
   gauge.setAttribute('aria-label',known?'电池电量':'电量未知');
   if(known){
     gauge.setAttribute('aria-valuenow',String(value));gauge.setAttribute('aria-valuemin','0');gauge.setAttribute('aria-valuemax','100');
-    gauge.setAttribute('aria-valuetext',`电量 ${value}%`);
+    gauge.setAttribute('aria-valuetext',`电量 ${value}%，${chargeLabel}`);
   }else{
     for(const name of ['aria-valuenow','aria-valuemin','aria-valuemax','aria-valuetext'])gauge.removeAttribute(name);
   }
   const details=[];
   if(known)details.push(`电量 ${value}%`);
   if(Number.isFinite(voltage))details.push(`电压 ${voltage.toFixed(3)} V`);
+  if(Number.isFinite(current))details.push(`电流 ${Math.round(current)} mA`);
+  details.push(chargeLabel);
+  if(chargeState==='unknown' && chargeMessage)details.push(chargeMessage);
   if(!known && message)details.push(message);
   gauge.title=details.join(' · ')||'电量未知';
   level.style.strokeDashoffset=String(known?100-value:100);
@@ -117,7 +125,7 @@ function updateHeaderStatus(){
   const detail=state.screen.error||(state.running?`正在刷新：${state.running.title}`:state.pending?`${state.pending} 项内容等待刷新`:'刷新队列空闲');
   set('header-screen',text[screen]||'屏幕状态未知',kind,detail);
   const battery=state.battery.available && Number.isFinite(state.battery.percent);
-  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'');
+  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'',state.battery.charge_state||'unknown',state.battery.current_ma,state.battery.current_message||'');
 }
 async function refreshStatus() {
   const request=++statusRequest;
@@ -137,7 +145,7 @@ async function refreshStatus() {
       $('current-screen').src='/api/screen?v='+encodeURIComponent(state.screen.snapshot);$('current-screen').hidden=false;$('screen-empty').hidden=true;lastSnapshot=state.screen.snapshot;
     }
     $('upcoming').innerHTML=state.upcoming.length?state.upcoming.map(s=>`<div class="upcoming-item"><div class="schedule-time">${escapeHTML(formatTime(s.next_run,{month:undefined,day:undefined}))}<small>${escapeHTML(formatTime(s.next_run,{hour:undefined,minute:undefined}))}</small></div><div><strong>${escapeHTML(s.content_title)}</strong><p>${escapeHTML(s.title)} · ${s.kind==='cron'?'循环':'单次'}</p></div></div>`).join(''):'<div class="empty-state">把下一帧交给时间<br><a class="text-link" href="#schedule">创建你的第一个排程 ↗</a></div>';
-    $('job-history').innerHTML=state.jobs.length?state.jobs.map(j=>`<div class="history-row"><span>${escapeHTML(j.title)}${j.error?`<small class="error-text"> ${escapeHTML(j.error)}</small>`:''}</span><span class="muted">${j.scheduled_for?'定时':'手动'}</span><time class="muted">${escapeHTML(formatTime(j.created_at))}</time><span class="job-state ${j.status==='failed'?'failed':''}">${escapeHTML(labels[j.status])}</span></div>`).join(''):'<div class="empty-state">还没有刷新记录</div>';
+    $('job-history').innerHTML=state.jobs.length?state.jobs.map(j=>`<div class="history-row"><span>${escapeHTML(j.title)}${j.error?`<small class="error-text"> ${escapeHTML(j.error)}</small>`:''}</span><span class="muted">${j.purpose==='battery_warning'?'电量提醒':j.scheduled_for?'定时':'手动'}</span><time class="muted">${escapeHTML(formatTime(j.created_at))}</time><span class="job-state ${j.status==='failed'?'failed':''}">${escapeHTML(labels[j.status])}</span></div>`).join(''):'<div class="empty-state">还没有刷新记录</div>';
     $('schedule-tz').textContent=state.timezone;
   } catch(e){if(request!==statusRequest)return; statusAvailable=false; syncDisplayControls(); updateHeaderStatus(); if(!state)toast(e.message,true);}
 }

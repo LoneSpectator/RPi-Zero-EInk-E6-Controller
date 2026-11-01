@@ -45,7 +45,19 @@ class Store:
                 INSERT OR IGNORE INTO display_state(singleton, status) VALUES(1, 'unknown');
                 CREATE INDEX IF NOT EXISTS jobs_status ON jobs(status, created_at);
                 CREATE INDEX IF NOT EXISTS schedules_due ON schedules(enabled, next_run);
+                CREATE TABLE IF NOT EXISTS battery_learning (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL
+                );
             ''')
+            # Additive migration for existing deployments and saved screen images.
+            for table, columns in {
+                'jobs': {'source_snapshot': 'TEXT', 'purpose': "TEXT NOT NULL DEFAULT 'display'"},
+                'display_state': {'source_snapshot': 'TEXT', 'battery_warning': 'INTEGER NOT NULL DEFAULT 0'},
+            }.items():
+                existing = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
+                for name, declaration in columns.items():
+                    if name not in existing:
+                        db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {declaration}')
 
     @contextmanager
     def connection(self):
