@@ -54,17 +54,17 @@ with TemporaryDirectory(prefix='photopainter-alignment-') as directory:
                 data = base64.b64decode(encoded)
                 return response.request.post_data_json, Image.open(BytesIO(data)).convert('RGB')
 
-            # Verify the actual document sent to Pillow, including mixed italic
-            # styles, rather than relying on how the browser paints the sample.
+            # Verify the actual six-character document sent to Pillow; the white
+            # character must survive serialization even on a white background.
             payload, sample_image = preview()
             runs = payload['paragraphs'][0]['runs']
             assert payload['title'] == '' and payload['background'] == '#ffffff'
             assert payload['vertical_align'] == 'top' and payload['padding'] == 24
             assert payload['paragraphs'][0]['align'] == 'center'
-            assert [run['text'] for run in runs] == ['五', '颜', '六', '色', '\u3000黑'], runs
-            assert [run['color'] for run in runs] == ['#ff0000', '#ffff00', '#0000ff', '#00ff00', '#000000'], runs
+            assert [run['text'] for run in runs] == ['五', '颜', '六', '色', '的', '黑'], runs
+            assert [run['color'] for run in runs] == ['#ff0000', '#ffff00', '#0000ff', '#00ff00', '#ffffff', '#000000'], runs
             assert all(run['font'] == 'source-sans' and run['size'] == 32 and run['bold'] for run in runs), runs
-            assert all(run['italic'] for run in runs[:4]) and not runs[-1]['italic'], runs
+            assert not any(run['italic'] for run in runs), runs
             assert set(sample_image.get_flattened_data()) == {(255,255,255), (255,0,0), (255,255,0), (0,0,255), (0,255,0), (0,0,0)}
             page.screenshot(path='/tmp/photopainter-text-default.png',full_page=True)
 
