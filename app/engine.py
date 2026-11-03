@@ -85,6 +85,11 @@ class Engine:
         self.stop_event.set()
         for thread in self.threads:
             thread.join(timeout=245)
+        if isinstance(self.battery, BatteryMonitor):
+            try:
+                self.battery.close()
+            except Exception:
+                log.exception('Failed to persist battery shutdown state')
 
     def enqueue(self, content_id, *, require_idle=True):
         with self.store.connection() as db:

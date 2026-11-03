@@ -106,7 +106,8 @@ def test_wrong_direction_learning_is_reset_and_persisted(tmp_path, monkeypatch, 
     store = Store(tmp_path)
     saved = asdict(Learning(full_voltage=4.12, empty_voltage=3.12, resistance_ohm=.25,
                             charge_seen=True, charge_peak_ma=766, taper_seen=True,
-                            full=True, depleted_voltage=3.1, full_calibrated_at=123, empty_calibrated_at=456))
+                            full=True, full_calibrated_at=123, empty_calibrated_at=456))
+    saved['depleted_voltage'] = 3.1  # legacy pending minimum must not be reused.
     if legacy:
         saved.pop('model_version')
         saved.pop('current_polarity')
@@ -207,7 +208,7 @@ def test_abrupt_charge_stop_without_taper_cannot_use_short_confirmation(tmp_path
 def test_reported_4116v_1ma_recovers_full_after_long_confirmation(tmp_path, history, current):
     samples = Samples(voltage=4.116, current=current)
     monitor = monitor_for(tmp_path, samples)
-    monitor.learning.empty_voltage = 3.1
+    monitor.learning.empty_voltage = 3.45
     if history != 'none':
         samples.current = -766
         monitor.status()
@@ -231,7 +232,7 @@ def test_reported_4116v_1ma_recovers_full_after_long_confirmation(tmp_path, hist
     calibrated_at = result['calibration']['full_calibrated_at']
     restored = monitor_for(tmp_path, samples)
     assert restored.status()['percent'] == 100
-    assert restored.learning.empty_voltage == 3.1
+    assert restored.learning.empty_voltage == 3.45
     for _ in range(50):
         result = samples.next(restored)
     assert result['charge_state'] == 'full' and result['full_confirmation'] is None
@@ -287,7 +288,7 @@ def test_ineligible_voltage_or_current_never_recovers_full(tmp_path, voltage, cu
 def test_restart_preserves_old_endpoints_but_does_not_count_offline_confirmation_time(tmp_path):
     samples = Samples(voltage=4.116, current=-1)
     monitor = monitor_for(tmp_path, samples)
-    monitor.learning.empty_voltage = 3.1
+    monitor.learning.empty_voltage = 3.5
     monitor.status()
     for _ in range(100):
         samples.next(monitor)
@@ -299,7 +300,7 @@ def test_restart_preserves_old_endpoints_but_does_not_count_offline_confirmation
     samples.now += 3600
     restored = monitor_for(tmp_path, samples)
     result = restored.status()
-    assert restored.learning.empty_voltage == 3.1
+    assert restored.learning.empty_voltage == 3.5
     assert result['full_confirmation']['elapsed_seconds'] == 0
     for _ in range(FULL_RECOVERY_SETTLE_SECONDS // 4 - 1):
         result = samples.next(restored)
@@ -322,7 +323,7 @@ def test_voltage_stability_boundary_and_confirmed_full_percentage(tmp_path, swin
         assert result['calibration']['full_calibrated_at'] is None
 
 
-def test_depleted_endpoint_requires_sustained_low_discharge_then_next_charge(tmp_path):
+def test_short_low_voltage_readings_do_not_calibrate_an_empty_endpoint(tmp_path):
     samples = Samples(voltage=3.05, current=200)
     monitor = monitor_for(tmp_path, samples)
     monitor.status()
@@ -330,14 +331,7 @@ def test_depleted_endpoint_requires_sustained_low_discharge_then_next_charge(tmp
     samples.next(monitor, voltage=3.7)
     samples.next(monitor, voltage=3.8, current=-200)
     assert monitor.learning.empty_calibrated_at is None
-    for _ in range(10):
-        samples.next(monitor, voltage=3.05, current=200)
-    assert monitor.learning.depleted_voltage == 3.05
-    assert monitor.learning.empty_calibrated_at is None
-    restored = monitor_for(tmp_path, samples)  # persisted before battery cutoff/restart.
-    result = samples.next(restored, voltage=3.4, current=-200)
-    assert result['calibration']['empty_voltage'] == 3.05
-    assert result['calibration']['empty_calibrated_at'] is not None
+    assert monitor.learning.empty_voltage == 3.45
 
 
 def test_resistance_learned_from_repeated_load_steps_and_voltage_smoothed(tmp_path):

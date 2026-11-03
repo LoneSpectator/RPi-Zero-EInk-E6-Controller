@@ -51,6 +51,18 @@ class Store:
                 CREATE TABLE IF NOT EXISTS battery_learning (
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS battery_sessions (
+                    id TEXT PRIMARY KEY, boot_id TEXT, started_at REAL NOT NULL,
+                    last_seen_at REAL, ended_at REAL, previous_session_id TEXT,
+                    restart_reason TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS battery_samples (
+                    id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES battery_sessions(id) ON DELETE CASCADE,
+                    recorded_at REAL NOT NULL, voltage REAL NOT NULL, ocv_voltage REAL NOT NULL,
+                    current_ma REAL
+                );
+                CREATE INDEX IF NOT EXISTS battery_samples_session_time ON battery_samples(session_id,recorded_at);
+                CREATE INDEX IF NOT EXISTS battery_samples_time ON battery_samples(recorded_at);
                 CREATE TABLE IF NOT EXISTS log_settings (
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                     retention_days INTEGER NOT NULL CHECK(retention_days >= 1)
