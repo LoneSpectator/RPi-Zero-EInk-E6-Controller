@@ -14,6 +14,7 @@ LOW_BATTERY_PERCENT = 20
 CURRENT_DEADBAND_MA = 10
 SAMPLE_SECONDS = 4
 FULL_SETTLE_SECONDS = 180
+FULL_RECOVERY_SETTLE_SECONDS = 15 * 60
 EMPTY_SETTLE_SECONDS = 30
 MODEL_VERSION = 2
 
@@ -52,6 +53,7 @@ class Learning:
     full_voltage: float = 4.2
     empty_voltage: float = 3.0
     full_calibrated_at: float | None = None
+    full_calibration_method: str | None = None
     empty_calibrated_at: float | None = None
     resistance_ohm: float | None = None
     charge_seen: bool = False
@@ -85,7 +87,8 @@ class BatteryMonitor:
                     self.learning = Learning(**saved)
                     item = self.learning
                     if not (4.05 <= item.full_voltage <= 4.3 and 2.8 <= item.empty_voltage <= 3.4
-                            and (item.resistance_ohm is None or 0.02 <= item.resistance_ohm <= 0.5)):
+                            and (item.resistance_ohm is None or 0.02 <= item.resistance_ohm <= 0.5)
+                            and item.full_calibration_method in (None, 'charge_taper', 'stable_idle')):
                         raise ValueError('Invalid learned battery values')
             except (TypeError, ValueError):
                 log.warning('Ignoring invalid battery calibration', exc_info=True)
@@ -118,9 +121,10 @@ class BatteryMonitor:
                 return self.cached.copy()
             raw = self.reader(self.driver)
             result = dict(raw)
-            result.update(charging=None, charge_state='unknown', method='ocv_curve',
+            result.update(charging=None, charge_state='unknown', method='ocv_curve', full_confirmation=None,
                           calibration={key: getattr(self.learning, key) for key in (
-                              'full_voltage', 'empty_voltage', 'full_calibrated_at', 'empty_calibrated_at', 'resistance_ohm')})
+                              'full_voltage', 'empty_voltage', 'full_calibrated_at', 'full_calibration_method',
+                              'empty_calibrated_at', 'resistance_ohm')})
             if not raw['available']:
                 self.full_candidate = self.empty_candidate = self.previous = None
             else:
@@ -197,25 +201,37 @@ class BatteryMonitor:
         else:
             result.update(charging=False, charge_state='idle')
             self.empty_candidate = None
-            # Near-zero current alone does not prove a full battery. Require an
-            # observed charge followed by stable high voltage for three minutes.
-            if item.charge_seen and item.taper_seen and 4.1 <= voltage <= 4.3:
+            # Normal charging evidence permits a three-minute confirmation.
+            # Startup after charging or missed taper samples need a much longer
+            # high-voltage, near-zero-current plateau. INA219 cannot read the
+            # charger's termination indicator, so both paths remain estimates.
+            if not item.full and 4.1 <= voltage <= 4.3:
+                observed_taper = item.charge_seen and item.taper_seen
+                required = FULL_SETTLE_SECONDS if observed_taper else FULL_RECOVERY_SETTLE_SECONDS
+                method = 'charge_taper' if observed_taper else 'stable_idle'
                 if self.full_candidate is None:
                     self.full_candidate = (now, voltage, voltage)
                 since, low, high = self.full_candidate
                 low, high = min(low, voltage), max(high, voltage)
-                if high - low > 0.02:
+                if high - low > 0.02 + 1e-9:
                     self.full_candidate = (now, voltage, voltage)
                 else:
                     self.full_candidate = (since, low, high)
-                    if now - since >= FULL_SETTLE_SECONDS:
+                    if now - since >= required:
                         item.full_voltage = round((low + high) / 2, 3)
                         item.full_calibrated_at = now
+                        item.full_calibration_method = method
                         item.full, item.charge_seen = True, False
                         item.taper_seen = False
                         item.charge_peak_ma = 0
                         self.full_candidate = None
                         changed = True
+                        log.info('Learned full battery voltage %.3f V via %s', item.full_voltage, method)
+                if self.full_candidate is not None:
+                    result['full_confirmation'] = {
+                        'elapsed_seconds': int(now - self.full_candidate[0]),
+                        'required_seconds': required, 'method': method,
+                    }
             else:
                 self.full_candidate = None
             if item.full and voltage >= item.full_voltage - 0.03:
@@ -229,7 +245,8 @@ class BatteryMonitor:
             self.filtered_ocv += alpha * (ocv - self.filtered_ocv)
         else:
             self.filtered_ocv = ocv
-        result['percent'] = estimate_percent(self.filtered_ocv, item.empty_voltage, item.full_voltage)
+        result['percent'] = (100 if result['charge_state'] == 'full' else
+                             estimate_percent(self.filtered_ocv, item.empty_voltage, item.full_voltage))
         result['ocv_voltage'] = round(ocv, 3)
         result['low'] = result['percent'] < LOW_BATTERY_PERCENT
         result['calibration'] = {key: getattr(item, key) for key in result['calibration']}

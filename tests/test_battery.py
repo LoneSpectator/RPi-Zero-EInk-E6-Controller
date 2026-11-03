@@ -8,7 +8,10 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
 
-from app.battery import BatteryMonitor, Learning, estimate_percent, FULL_SETTLE_SECONDS, MODEL_VERSION
+from app.battery import (
+    BatteryMonitor, Learning, estimate_percent, FULL_SETTLE_SECONDS,
+    FULL_RECOVERY_SETTLE_SECONDS, MODEL_VERSION,
+)
 from app.config import Settings
 from app.engine import Engine
 from app.hardware import battery_status
@@ -168,6 +171,8 @@ def test_full_endpoint_requires_observed_charge_and_stable_taper_then_survives_r
     assert result['charge_state'] == 'full'
     assert result['calibration']['full_voltage'] == 4.18
     assert result['calibration']['full_calibrated_at'] is not None
+    assert result['calibration']['full_calibration_method'] == 'charge_taper'
+    assert result['percent'] == 100 and result['full_confirmation'] is None
     restored = monitor_for(tmp_path, samples)
     assert restored.status()['charge_state'] == 'full'
     assert restored.learning.full_voltage == 4.18
@@ -187,13 +192,134 @@ def test_unplug_and_sampling_gap_do_not_count_as_full_settle_time(tmp_path):
     assert monitor.learning.full_calibrated_at is None
 
 
-def test_abrupt_charge_stop_without_taper_cannot_calibrate_full(tmp_path):
+def test_abrupt_charge_stop_without_taper_cannot_use_short_confirmation(tmp_path):
     samples = Samples(voltage=4.18, current=-200)
     monitor = monitor_for(tmp_path, samples)
     monitor.status()
     for _ in range(50):
         samples.next(monitor, current=0)
     assert monitor.learning.full_calibrated_at is None
+    assert monitor.status()['full_confirmation']['required_seconds'] == FULL_RECOVERY_SETTLE_SECONDS
+
+
+@pytest.mark.parametrize('history', ['none', 'bulk-only', 'restart-after-bulk'])
+@pytest.mark.parametrize('current', [-1, 1])
+def test_reported_4116v_1ma_recovers_full_after_long_confirmation(tmp_path, history, current):
+    samples = Samples(voltage=4.116, current=current)
+    monitor = monitor_for(tmp_path, samples)
+    monitor.learning.empty_voltage = 3.1
+    if history != 'none':
+        samples.current = -766
+        monitor.status()
+        samples.next(monitor, current=current)
+        if history == 'restart-after-bulk':
+            monitor = monitor_for(tmp_path, samples)
+    result = monitor.status()
+    assert result['percent'] == 91
+    assert result['full_confirmation'] == {
+        'elapsed_seconds': 0, 'required_seconds': FULL_RECOVERY_SETTLE_SECONDS, 'method': 'stable_idle',
+    }
+    for _ in range(FULL_RECOVERY_SETTLE_SECONDS // 4 - 1):
+        result = samples.next(monitor)
+    assert result['percent'] == 91 and result['calibration']['full_calibrated_at'] is None
+    assert result['full_confirmation']['elapsed_seconds'] == FULL_RECOVERY_SETTLE_SECONDS - 4
+    result = samples.next(monitor)
+    assert result['percent'] == 100 and result['charge_state'] == 'full'
+    assert result['full_confirmation'] is None
+    assert result['calibration']['full_voltage'] == 4.116
+    assert result['calibration']['full_calibration_method'] == 'stable_idle'
+    calibrated_at = result['calibration']['full_calibrated_at']
+    restored = monitor_for(tmp_path, samples)
+    assert restored.status()['percent'] == 100
+    assert restored.learning.empty_voltage == 3.1
+    for _ in range(50):
+        result = samples.next(restored)
+    assert result['charge_state'] == 'full' and result['full_confirmation'] is None
+    assert result['calibration']['full_calibrated_at'] == calibrated_at
+
+
+@pytest.mark.parametrize('interruption', ['gap', 'unavailable', 'charging', 'discharging', 'voltage-jump', 'current-unknown'])
+def test_recovery_requires_a_fresh_continuous_interval_after_interruption(tmp_path, interruption):
+    samples = Samples(voltage=4.116, current=-1)
+    monitor = monitor_for(tmp_path, samples)
+    monitor.status()
+    for _ in range(FULL_RECOVERY_SETTLE_SECONDS // 4 - 1):
+        samples.next(monitor)
+    if interruption == 'gap':
+        samples.next(monitor, seconds=300)
+    elif interruption == 'unavailable':
+        reader = monitor.reader
+        monitor.reader = lambda driver: {'available': False}
+        assert samples.next(monitor)['full_confirmation'] is None
+        monitor.reader = reader
+    elif interruption == 'charging':
+        samples.next(monitor, current=-50)
+    elif interruption == 'discharging':
+        samples.next(monitor, current=50)
+    elif interruption == 'voltage-jump':
+        samples.next(monitor, voltage=4.15)
+    else:
+        samples.current = None
+        assert samples.next(monitor)['full_confirmation'] is None
+    result = samples.next(monitor, voltage=4.116, current=-1)
+    assert result['calibration']['full_calibrated_at'] is None
+    assert result['full_confirmation']['elapsed_seconds'] <= 4
+    for _ in range(FULL_RECOVERY_SETTLE_SECONDS // 4 - 2):
+        result = samples.next(monitor)
+    assert result['calibration']['full_calibrated_at'] is None
+    samples.next(monitor)
+    result = samples.next(monitor)
+    assert result['charge_state'] == 'full' and result['percent'] == 100
+
+
+@pytest.mark.parametrize('voltage,current', [(4.096, -1), (4.304, -1), (4.116, -11), (4.116, 11), (4.116, None)])
+def test_ineligible_voltage_or_current_never_recovers_full(tmp_path, voltage, current):
+    samples = Samples(voltage=voltage, current=current)
+    monitor = monitor_for(tmp_path, samples)
+    monitor.status()
+    for _ in range(FULL_RECOVERY_SETTLE_SECONDS // 4 + 5):
+        result = samples.next(monitor)
+    assert result['calibration']['full_calibrated_at'] is None
+    assert result['full_confirmation'] is None
+    assert result['charge_state'] != 'full'
+
+
+def test_restart_preserves_old_endpoints_but_does_not_count_offline_confirmation_time(tmp_path):
+    samples = Samples(voltage=4.116, current=-1)
+    monitor = monitor_for(tmp_path, samples)
+    monitor.learning.empty_voltage = 3.1
+    monitor.status()
+    for _ in range(100):
+        samples.next(monitor)
+    # Version 2 data from before full_calibration_method existed remains valid.
+    with monitor.store.connection() as db:
+        saved = json.loads(db.execute('SELECT payload FROM battery_learning').fetchone()[0])
+        saved.pop('full_calibration_method')
+        db.execute('UPDATE battery_learning SET payload=?', (json.dumps(saved),))
+    samples.now += 3600
+    restored = monitor_for(tmp_path, samples)
+    result = restored.status()
+    assert restored.learning.empty_voltage == 3.1
+    assert result['full_confirmation']['elapsed_seconds'] == 0
+    for _ in range(FULL_RECOVERY_SETTLE_SECONDS // 4 - 1):
+        result = samples.next(restored)
+    assert result['calibration']['full_calibrated_at'] is None
+    assert samples.next(restored)['charge_state'] == 'full'
+
+
+@pytest.mark.parametrize('swing,calibrates', [(.020, True), (.024, False)])
+def test_voltage_stability_boundary_and_confirmed_full_percentage(tmp_path, swing, calibrates):
+    samples = Samples(voltage=4.116 - swing / 2, current=-1)
+    monitor = monitor_for(tmp_path, samples)
+    monitor.status()
+    for index in range(FULL_RECOVERY_SETTLE_SECONDS // 4):
+        result = samples.next(monitor, voltage=4.116 + (-1 if index % 2 else 1) * swing / 2)
+    assert (result['charge_state'] == 'full') is calibrates
+    if calibrates:
+        assert result['percent'] == 100
+        assert result['calibration']['full_voltage'] == 4.116
+    else:
+        assert result['calibration']['full_calibrated_at'] is None
 
 
 def test_depleted_endpoint_requires_sustained_low_discharge_then_next_charge(tmp_path):

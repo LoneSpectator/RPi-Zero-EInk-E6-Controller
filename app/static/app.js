@@ -80,7 +80,7 @@ function clock() {
   $('header-clock').classList.remove('status-unknown');
   $('header-clock').title='服务器时间 · '+new Intl.DateTimeFormat('zh-CN',{timeZone:state.timezone,weekday:'long'}).format(date)+' · '+state.timezone;
 }
-function updateHeaderBattery(percent=null,voltage=null,message='',chargeState='unknown',current=null,chargeMessage=''){
+function updateHeaderBattery(percent=null,voltage=null,message='',chargeState='unknown',current=null,chargeMessage='',fullConfirmation=null){
   const gauge=$('header-battery-gauge'), level=$('header-battery-level'), known=Number.isFinite(percent);
   const value=known?Math.round(Math.min(100,Math.max(0,percent))):null;
   const text=known?`${value}%`:'—%';
@@ -102,6 +102,10 @@ function updateHeaderBattery(percent=null,voltage=null,message='',chargeState='u
   if(Number.isFinite(voltage))details.push(`电压 ${voltage.toFixed(3)} V`);
   if(Number.isFinite(current))details.push(`电流 ${Math.round(current)} mA`);
   details.push(chargeLabel);
+  if(known && Number.isFinite(fullConfirmation?.elapsed_seconds) && Number.isFinite(fullConfirmation?.required_seconds)){
+    const remaining=Math.max(1,Math.ceil((fullConfirmation.required_seconds-fullConfirmation.elapsed_seconds)/60));
+    details.push(`满电校准确认中，约剩 ${remaining} 分钟`);
+  }
   if(chargeState==='unknown' && chargeMessage)details.push(chargeMessage);
   if(!known && message)details.push(message);
   gauge.title=details.join(' · ')||'电量未知';
@@ -127,7 +131,7 @@ function updateHeaderStatus(){
   const detail=state.screen.error||(state.running?`正在刷新：${state.running.title}`:state.pending?`${state.pending} 项内容等待刷新`:'刷新队列空闲');
   set('header-screen',text[screen]||'屏幕状态未知',kind,detail);
   const battery=state.battery.available && Number.isFinite(state.battery.percent);
-  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'',state.battery.charge_state||'unknown',Number.isFinite(state.battery.raw_current_ma)?state.battery.raw_current_ma:state.battery.current_ma,state.battery.current_message||'');
+  updateHeaderBattery(battery?state.battery.percent:null,state.battery.available?state.battery.voltage:null,state.battery.message||'',state.battery.charge_state||'unknown',Number.isFinite(state.battery.raw_current_ma)?state.battery.raw_current_ma:state.battery.current_ma,state.battery.current_message||'',state.battery.full_confirmation);
 }
 async function refreshStatus() {
   const request=++statusRequest;
